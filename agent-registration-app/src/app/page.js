@@ -743,26 +743,35 @@ function GenerateView({ agents, forms, pdfLib }) {
 export default function AgentRegistrationTool() {
   const [pdfLib, setPdfLib] = useState(null);
   const pdfLoading = !pdfLib;
-  const [agents, setAgents] = useState(() => {
-    try { const d = JSON.parse(localStorage.getItem("agent_reg_data")); return d?.agents || []; } catch { return []; }
-  });
-  const [forms, setForms] = useState(() => {
-    try { const d = JSON.parse(localStorage.getItem("agent_reg_data")); return d?.forms || []; } catch { return []; }
-  });
+  const [agents, setAgents] = useState([]);
+  const [forms, setForms] = useState([]);
   const [tab, setTab] = useState("agents");
   const [editAgent, setEditAgent] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const importRef = useRef(null);
 
   useEffect(() => { setPdfLib({ PDFDocument }); }, []);
 
+  // Load saved data from localStorage on first client render
   useEffect(() => {
+    try {
+      const d = JSON.parse(localStorage.getItem("agent_reg_data"));
+      if (d?.agents?.length) setAgents(d.agents);
+      if (d?.forms?.length) setForms(d.forms);
+    } catch {}
+    setHydrated(true);
+  }, []);
+
+  // Auto-save whenever agents or forms change (only after initial load)
+  useEffect(() => {
+    if (!hydrated) return;
     try {
       const lightAgents = agents.map(a => ({ ...a, addendums: Object.fromEntries(Object.entries(a.addendums || {}).map(([k, v]) => [k, { name: v.name }])) }));
       const lightForms = forms.map(f => ({ ...f, bytes: [] }));
       localStorage.setItem("agent_reg_data", JSON.stringify({ agents: lightAgents, forms: lightForms }));
     } catch {}
-  }, [agents, forms]);
+  }, [agents, forms, hydrated]);
 
   const saveAgent = (a) => {
     setAgents(prev => prev.find(x => x.id === a.id) ? prev.map(x => x.id === a.id ? a : x) : [...prev, a]);
