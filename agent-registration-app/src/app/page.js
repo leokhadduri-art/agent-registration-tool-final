@@ -160,11 +160,21 @@ async function idbDeleteAgent(agentId) {
 /* ═══════════════════ AUTO-MAP ENGINE ═══════════════════ */
 function normFieldName(raw) {
   return raw
+    .replace(/\[\d+\]/g, "")            // strip [0], [1], etc. (XFA indices)
+    .replace(/#\w+/g, "")               // strip #subform, #pageSet, etc.
+    .replace(/^form\d+\./i, "")          // strip form1. prefix
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_\-\.\/\\:]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+/** Extract just the leaf (last segment) from a dotted field path */
+function leafFieldName(raw) {
+  const segments = raw.replace(/\[\d+\]/g, "").split(/[.\/]/);
+  const leaf = segments.filter(s => s && !s.startsWith("#") && !/^form\d+$/i.test(s)).pop() || raw;
+  return leaf.replace(/[_\-]/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim().toLowerCase();
 }
 
 /* --- Typed addendum field patterns: route fields to specific addendum types --- */
@@ -228,28 +238,29 @@ const AUTO_MAP_RULES = [
   { patterns: [/birth\s*country/i, /country\s*of\s*birth/i], value: "birthCountry" },
   { patterns: [/birth\s*city/i, /city\s*of\s*birth/i], value: "birthCity" },
 
-  // Home address — specific patterns
-  { patterns: [/home\s*address/i, /residential\s*address/i, /mailing\s*address/i, /personal\s*address/i, /residence\s*address/i, /current\s*address/i, /home\s*street/i], value: "homeStreet" },
-  { patterns: [/home\s*city/i, /residential\s*city/i, /mailing\s*city/i, /city\s*of\s*residence/i], value: "homeCity" },
-  { patterns: [/home\s*state/i, /residential\s*state/i, /mailing\s*state/i, /state\s*of\s*residence/i], value: "homeState" },
-  { patterns: [/home\s*zip/i, /residential\s*zip/i, /mailing\s*zip/i], value: "homeZip" },
+  // Home / Mailing address — specific patterns
+  // NOTE: "mail address" (without "ing") for VA-style forms like MAIL_ADDRESS
+  { patterns: [/home\s*address/i, /residential\s*address/i, /mailing\s*address/i, /mail\s*address/i, /personal\s*address/i, /residence\s*address/i, /current\s*address/i, /home\s*street/i], value: "homeStreet" },
+  { patterns: [/home\s*city/i, /residential\s*city/i, /mailing\s*city/i, /mail.*city/i, /city\s*of\s*residence/i], value: "homeCity" },
+  { patterns: [/home\s*state/i, /residential\s*state/i, /mailing\s*state/i, /mail.*state(?!.*ment)/i, /state\s*of\s*residence/i], value: "homeState" },
+  { patterns: [/home\s*zip/i, /residential\s*zip/i, /mailing\s*zip/i, /mail.*zip/i], value: "homeZip" },
   { patterns: [/home\s*county/i, /county\s*of\s*residence/i, /residential\s*county/i], value: "homeCounty" },
 
-  // Contact — phone patterns include "telephone" variations for TN-style forms
-  { patterns: [/home\s*(phone|tele)/i, /personal\s*(phone|tele)/i, /daytime\s*(phone|tele)/i, /primary\s*(phone|tele)/i, /residential\s*(phone|tele)/i], value: "homePhone" },
-  { patterns: [/mobile\s*(phone|tele)?/i, /cell\s*(phone|tele)/i, /\bcell\b/i, /cellular/i, /mobile\s*tele/i], value: "mobilePhone" },
+  // Contact — phone patterns include "telephone" variations and VA-style "Primary"/"Alternate"
+  { patterns: [/home\s*(phone|tele)/i, /personal\s*(phone|tele)/i, /daytime\s*(phone|tele)/i, /residential\s*(phone|tele)/i], value: "homePhone" },
+  { patterns: [/mobile\s*(phone|tele)?/i, /cell\s*(phone|tele)/i, /\bcell\b/i, /cellular/i, /mobile\s*tele/i, /\balternate\b/i, /cellphone/i], value: "mobilePhone" },
   { patterns: [/e-?mail\s*address/i, /personal\s*e-?mail/i, /home\s*e-?mail/i, /^e-?mail$/i, /contact\s*e-?mail/i, /applicant\s*e-?mail/i, /e-?mail\s*of/i], value: "homeEmail" },
 
   // Business — workplace / office / employer all map to business fields (NOT home)
   { patterns: [/business\s*name/i, /employer\s*name/i, /firm\s*name/i, /company\s*name/i, /agency\s*name/i, /entity\s*name/i, /name\s*of\s*(business|employer|firm|company|agency|entity)/i, /employing\s*firm/i], value: "businessName" },
   { patterns: [/\bdba\b/i, /doing\s*business\s*as/i, /trade\s*name/i, /d\s*b\s*a/i], value: "dba" },
   { patterns: [/nature\s*of\s*business/i, /type\s*of\s*business/i, /business\s*type/i], value: "natureOfBusiness" },
-  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i, /workplace\s*address/i, /work\s*address/i, /place\s*of\s*business/i, /principal\s*business\s*address/i, /principal\s*address/i], value: "businessStreet" },
-  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /workplace\s*city/i, /city.*_2/i, /city.*2$/i], value: "businessCity" },
-  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /workplace\s*state/i, /state.*_2/i, /state.*2$/i], value: "businessState" },
-  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /workplace\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i], value: "businessZip" },
+  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i, /workplace\s*address/i, /work\s*address/i, /place\s*of\s*business/i, /principal\s*business\s*address/i, /principal\s*address/i, /physical\s*address/i], value: "businessStreet" },
+  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /workplace\s*city/i, /city.*_2/i, /city.*2$/i, /physical.*city/i], value: "businessCity" },
+  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /workplace\s*state/i, /state.*_2/i, /state.*2$/i, /physical.*state/i], value: "businessState" },
+  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /workplace\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i, /physical.*zip/i], value: "businessZip" },
   { patterns: [/business\s*county/i, /employer\s*county/i, /workplace\s*county/i], value: "businessCounty" },
-  { patterns: [/work\s*(phone|tele)/i, /business\s*(phone|tele)/i, /office\s*(phone|tele)/i, /employer\s*(phone|tele)/i, /bus.*(phone|tele)/i, /work.*number/i], value: "workPhone" },
+  { patterns: [/work\s*(phone|tele)/i, /business\s*(phone|tele)/i, /office\s*(phone|tele)/i, /employer\s*(phone|tele)/i, /bus.*(phone|tele)/i, /work.*number/i, /contact.*primary/i, /primary.*contact/i, /\bprimary\b(?!.*address)/i], value: "workPhone" },
   { patterns: [/\bfax\b/i, /fax\s*number/i, /facsimile/i, /fax\s*#/i], value: "fax" },
   { patterns: [/work\s*e-?mail/i, /business\s*e-?mail/i, /office\s*e-?mail/i, /employer\s*e-?mail/i], value: "workEmail" },
   { patterns: [/business\s*web/i, /company\s*web/i, /website/i, /web\s*address/i, /url/i], value: "businessWebSocial" },
@@ -276,35 +287,71 @@ const SKIP_PATTERNS = [/\bssn\b/i, /social\s*security/i, /\bsignature\b/i, /^sig
 
 function autoMapField(fieldName) {
   const name = normFieldName(fieldName);
+  const leaf = leafFieldName(fieldName);
 
   // Skip sensitive / manual fields first
   for (const pat of SKIP_PATTERNS) {
-    if (pat.test(name)) return "_SKIP";
+    if (pat.test(name) || pat.test(leaf)) return "_SKIP";
   }
 
-  // SPECIAL: Detect table row fields that should always be addendum
+  // ── SPECIAL: DOB vs Place-of-Birth disambiguation ──
+  // VA form has DOB_POB[0].DOB[0] (date) and DOB_POB[0].TX_DOB[1] (place)
+  // Both normalize to contain "dob" — use leaf to decide
+  if (/\bdob\b/i.test(name) && /\bpob\b/i.test(name)) {
+    // Leaf is just "DOB" → date of birth; leaf is "TX_DOB" or has prefix → place of birth
+    if (/^dob$/i.test(leaf)) return "_dobFormatted";
+    return "_birthPlace";
+  }
+
+  // ── SPECIAL: "Current Business/Employer" tables → NOT addendum ──
+  // VA Q14A: CurrentBusiness-Employer table has Row1 with BusinessEmployer, Address, Telephone, etc.
+  // These are CURRENT employer info, not employment history.
+  const isCurrentBizTable = /current.*business/i.test(name) || /current.*employ(?!.*hist)/i.test(name);
+  if (isCurrentBizTable && /row\s*\d+/i.test(name)) {
+    // Map based on leaf field name
+    if (/business\s*employer/i.test(leaf) || /^name$/i.test(leaf)) return "businessName";
+    if (/^address$/i.test(leaf)) return "_bizAddrFull";
+    if (/tele/i.test(leaf) || /phone/i.test(leaf)) return "workPhone";
+    if (/nature/i.test(leaf) || /^business$/i.test(leaf)) return "natureOfBusiness";
+    if (/form.*organ/i.test(leaf) || /^org$/i.test(leaf)) return "_SKIP";
+    // Owners/Partners sub-table within CurrentBusiness
+    if (/full.*name/i.test(leaf) || /title/i.test(leaf) || /ss.*no/i.test(leaf)) return "_ADD_financialParties";
+    // If within OwnerNme / OwnersPartners table
+    if (/owner/i.test(name) || /partner/i.test(name)) return "_ADD_financialParties";
+    return "_SKIP";
+  }
+
+  // ── SPECIAL: Detect table row fields that should be addendum ──
   // Fields like "Row1_FullName", "employer.0.name", "reference[2]" etc.
-  if (/row\s*\d+/i.test(name) || /\.\d+\./i.test(fieldName) || /\[\d+\]/i.test(fieldName)) {
+  if (/row\s*\d+/i.test(name)) {
     if (/full\s*name/i.test(name) || /complete.*address/i.test(name) || /street.*address/i.test(name) ||
-        /title/i.test(name) || /percent/i.test(name) || /interest/i.test(name) ||
-        /officer/i.test(name) || /shareholder/i.test(name) || /director/i.test(name)) {
+        /title/i.test(leaf) || /percent/i.test(name) || /interest/i.test(name) ||
+        /officer/i.test(name) || /shareholder/i.test(name) || /director/i.test(name) ||
+        /owner/i.test(name) || /partner/i.test(name)) {
       return "_ADD_financialParties";
     }
-    if (/name.*business/i.test(name) || /business.*employer/i.test(name) || /type.*business/i.test(name) ||
-        /employer/i.test(name) || /occupation/i.test(name) ||
-        /start\s*date/i.test(name) || /end\s*date/i.test(name) || /dates?\s*of/i.test(name)) {
+    if (/employment\s*hist/i.test(name) || /emp\s*hist/i.test(name) ||
+        /occupation/i.test(leaf) || /yrs\s*employ/i.test(leaf) ||
+        /start\s*date/i.test(leaf) || /end\s*date/i.test(leaf) || /dates?\s*of/i.test(leaf)) {
       return "_ADD_workHistory";
     }
-    if (/training/i.test(name) || /education/i.test(name) || /school/i.test(name) ||
-        /degree/i.test(name) || /institution/i.test(name) || /program/i.test(name)) {
+    if (/education/i.test(name) || /training/i.test(name) || /school/i.test(name) ||
+        /degree/i.test(leaf) || /institution/i.test(leaf) || /program/i.test(leaf) ||
+        /table\s*edu/i.test(name)) {
       return "_ADD_formalTraining";
     }
-    if (/athlete/i.test(name) || /client/i.test(name) || /player/i.test(name) || /sport/i.test(name)) {
+    if (/athlete/i.test(name) || /client/i.test(name) || /player/i.test(name) || /sport/i.test(leaf) ||
+        /student/i.test(name)) {
       return "_ADD_clientList";
     }
     if (/reference/i.test(name)) {
       return "_ADD_references";
     }
+    if (/reciprocity/i.test(name) || /lic\s*cert/i.test(leaf) || /exp\s*date/i.test(leaf) || /status/i.test(leaf)) {
+      return "_ADD_licenseHistory";
+    }
+    // Generic table row field → likely addendum, skip individual cells
+    return "_SKIP";
   }
 
   // Check typed addendum patterns (override standard field mappings)
@@ -317,7 +364,7 @@ function autoMapField(fieldName) {
   // Run standard mapping rules
   for (const rule of AUTO_MAP_RULES) {
     for (const pat of rule.patterns) {
-      if (pat.test(name)) return rule.value;
+      if (pat.test(name) || pat.test(leaf)) return rule.value;
     }
   }
   return "_SKIP";
@@ -363,13 +410,15 @@ function getComputed(agent, key) {
   }
 }
 
-function getAgentValue(agent, mappingKey, addendumNumberMap) {
+function getAgentValue(agent, mappingKey, addendumNumberMap, opts = {}) {
   if (!mappingKey || mappingKey === "_SKIP") return null;
   if (mappingKey === "_ADDENDUM") return "See Attached Addendum";
   if (mappingKey.startsWith("_ADD_")) {
     const addType = mappingKey.replace("_ADD_", "");
     const num = addendumNumberMap?.[addType];
     const label = ADDENDUM_TYPES.find(t => t.key === addType)?.label || addType;
+    // Short mode for table row cells (limited space)
+    if (opts.short) return num ? `See Addendum ${num}` : "See Addendum";
     if (num) return `See Attached Addendum ${num} - ${label}`;
     return `See Attached Addendum - ${label}`;
   }
@@ -810,7 +859,9 @@ function GenerateView({ agents, forms, pdfLib }) {
           const form = doc.getForm();
           for (const [fieldName, mappingKey] of Object.entries(selForm.mappings)) {
             if (!mappingKey || mappingKey === "_SKIP") continue;
-            const value = getAgentValue(selAgent, mappingKey, addendumNumberMap);
+            // Use short text for table row fields to avoid overflow in small cells
+            const isRowField = /row\s*\d+/i.test(normFieldName(fieldName));
+            const value = getAgentValue(selAgent, mappingKey, addendumNumberMap, { short: isRowField });
             if (value === null || value === undefined || value === "") continue;
             try {
               const field = form.getField(fieldName);
