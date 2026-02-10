@@ -47,9 +47,20 @@ const COMPUTED_FIELDS = [
   { key: "_dobFormatted", label: "DOB (MM/DD/YYYY)" },
 ];
 
+/* Typed addendum mapping keys — each maps to a specific ADDENDUM_TYPE */
 const SPECIAL_MAPPINGS = [
-  { key: "_ADDENDUM", label: "→ \"See Attached Addendum\"" },
-  { key: "_SKIP", label: "— Skip (don't fill) —" },
+  { key: "_ADDENDUM", label: "See Attached Addendum (generic)" },
+  { key: "_ADD_workHistory", label: "Addendum: Employment History" },
+  { key: "_ADD_formalTraining", label: "Addendum: Formal Training" },
+  { key: "_ADD_practicalExp", label: "Addendum: Practical Experience" },
+  { key: "_ADD_education", label: "Addendum: Education" },
+  { key: "_ADD_clientList", label: "Addendum: Client List / Athletes" },
+  { key: "_ADD_references", label: "Addendum: References" },
+  { key: "_ADD_financialParties", label: "Addendum: Financially Interested Parties" },
+  { key: "_ADD_licenseHistory", label: "Addendum: License History" },
+  { key: "_ADD_feeSchedule", label: "Addendum: Fee Schedule" },
+  { key: "_ADD_other", label: "Addendum: Other" },
+  { key: "_SKIP", label: "Skip (don't fill)" },
 ];
 
 const ADDENDUM_TYPES = [
@@ -79,28 +90,57 @@ const EMPTY_AGENT = {
 };
 
 /* ═══════════════════ AUTO-MAP ENGINE ═══════════════════ */
-// Normalize PDF field name: "First_Name" → "first name", "firstName" → "first name"
 function normFieldName(raw) {
   return raw
-    .replace(/([a-z])([A-Z])/g, "$1 $2")   // camelCase → spaces
-    .replace(/[_\-\.\/\\:]/g, " ")          // separators → spaces
-    .replace(/\s+/g, " ")                   // collapse whitespace
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\.\/\\:]/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
 
-const AUTO_MAP_RULES = [
-  // ADDENDUM-ONLY FIELDS — Must come first to override more generic rules
-  // Officers/Shareholders/Directors/Partners table fields
-  { patterns: [/officer/i, /shareholder/i, /director/i, /partner/i, /principal/i, /owner/i, /member.*llc/i, /equity.*holder/i, /financially.*interested/i], value: "_ADDENDUM" },
-  // Employment history table fields
-  { patterns: [/employment.*history/i, /employer.*history/i, /work.*history/i, /occupation.*history/i, /previous.*employer/i, /past.*employment/i, /job.*history/i], value: "_ADDENDUM" },
-  // Client list / athletes represented
-  { patterns: [/client.*list/i, /athlete.*represented/i, /player.*represented/i, /current.*client/i], value: "_ADDENDUM" },
+/* --- Typed addendum field patterns: route fields to specific addendum types --- */
+const ADDENDUM_FIELD_PATTERNS = [
+  // Officers / Shareholders / Directors / Financially Interested Parties
+  { patterns: [/officer/i, /shareholder/i, /director(?!.*mail)/i, /principal/i,
+    /equity.*holder/i, /financially.*interest/i, /interest.*percent/i,
+    /profit.*shar/i, /corporation.*officer/i, /not\s*a\s*corporation/i,
+    /member.*manager/i, /associate.*sharer/i], addType: "financialParties" },
+
+  // Employment / Work History
+  { patterns: [/employ(ment|er).*hist/i, /work.*hist/i, /occupation.*hist/i,
+    /previous.*employ/i, /past.*employ/i, /job.*hist/i,
+    /name\s*of\s*business.*employer/i, /business.*engaged/i,
+    /self.?employ/i], addType: "workHistory" },
+
+  // Formal Training / Practical Experience / Education
+  { patterns: [/formal\s*train/i, /practical\s*experience/i, /education.*background/i,
+    /educational.*hist/i, /training.*program/i, /certification.*program/i,
+    /degree.*obtained/i, /school.*attended/i, /college.*university/i,
+    /institution.*name/i, /field.*study/i, /year.*graduat/i], addType: "formalTraining" },
+
+  // Client List / Athletes Represented
+  { patterns: [/client\s*list/i, /athlete.*represent/i, /player.*represent/i,
+    /current.*client/i, /student.*athlete/i, /list.*athlete/i,
+    /name.*athlete/i], addType: "clientList" },
+
   // References
-  { patterns: [/reference.*name/i, /reference.*address/i, /reference.*phone/i, /professional.*reference/i], value: "_ADDENDUM" },
-  
-  // Personal — specific before generic
+  { patterns: [/reference.*name/i, /reference.*address/i, /reference.*phone/i,
+    /professional.*reference/i, /personal.*reference/i, /character.*reference/i,
+    /reference.*\d/i], addType: "references" },
+
+  // License / Registration History
+  { patterns: [/license.*hist/i, /registration.*hist/i, /previous.*license/i,
+    /other.*state.*license/i, /denied.*license/i, /revoked/i, /suspended.*license/i],
+    addType: "licenseHistory" },
+
+  // Fee Schedule
+  { patterns: [/fee\s*schedule/i, /compensation.*schedule/i, /fee.*structure/i,
+    /rate.*schedule/i], addType: "feeSchedule" },
+];
+
+const AUTO_MAP_RULES = [
+  // Personal
   { patterns: [/first\s*name/i, /fname/i, /given\s*name/i, /^first$/i, /applicant\s*first/i, /name.*first/i], value: "firstName" },
   { patterns: [/middle\s*name/i, /mname/i, /^middle$/i, /\bmi\b/i, /m\.?i\.?$/i, /middle\s*initial/i, /name.*middle/i], value: "middleName" },
   { patterns: [/last\s*name/i, /lname/i, /surname/i, /family\s*name/i, /^last$/i, /applicant\s*last/i, /name.*last/i], value: "lastName" },
@@ -112,65 +152,91 @@ const AUTO_MAP_RULES = [
   { patterns: [/birth\s*country/i, /country\s*of\s*birth/i], value: "birthCountry" },
   { patterns: [/birth\s*city/i, /city\s*of\s*birth/i], value: "birthCity" },
 
-  // Home address — more specific patterns first
-  { patterns: [/home\s*address/i, /residential\s*address/i, /mailing\s*address/i, /street\s*address/i, /address\s*line\s*1/i, /address\s*1/i, /^address$/i, /^street$/i, /home\s*street/i, /residence\s*address/i, /personal\s*address/i, /current\s*address/i, /address\s*line/i], value: "homeStreet" },
+  // Home address — specific patterns
+  { patterns: [/home\s*address/i, /residential\s*address/i, /mailing\s*address/i, /personal\s*address/i, /residence\s*address/i, /current\s*address/i, /home\s*street/i], value: "homeStreet" },
   { patterns: [/home\s*city/i, /residential\s*city/i, /mailing\s*city/i, /city\s*of\s*residence/i], value: "homeCity" },
   { patterns: [/home\s*state/i, /residential\s*state/i, /mailing\s*state/i, /state\s*of\s*residence/i], value: "homeState" },
-  { patterns: [/home\s*zip/i, /residential\s*zip/i, /mailing\s*zip/i, /postal\s*code/i, /zip\s*code/i, /\bzip\b/i], value: "homeZip" },
+  { patterns: [/home\s*zip/i, /residential\s*zip/i, /mailing\s*zip/i], value: "homeZip" },
   { patterns: [/home\s*county/i, /county\s*of\s*residence/i, /residential\s*county/i], value: "homeCounty" },
 
   // Contact
-  { patterns: [/home\s*phone/i, /personal\s*phone/i, /daytime\s*phone/i, /phone\s*number/i, /telephone\s*number/i, /telephone/i, /\bphone\b/i, /\btel\b/i, /contact\s*number/i, /primary\s*phone/i], value: "homePhone" },
+  { patterns: [/home\s*phone/i, /personal\s*phone/i, /daytime\s*phone/i, /primary\s*phone/i], value: "homePhone" },
   { patterns: [/mobile/i, /cell\s*phone/i, /\bcell\b/i, /cellular/i], value: "mobilePhone" },
   { patterns: [/e-?mail\s*address/i, /personal\s*e-?mail/i, /home\s*e-?mail/i, /^e-?mail$/i, /contact\s*e-?mail/i, /applicant\s*e-?mail/i], value: "homeEmail" },
 
-  // Business — more specific patterns
+  // Business — workplace / office / employer all map to business fields (NOT home)
   { patterns: [/business\s*name/i, /employer\s*name/i, /firm\s*name/i, /company\s*name/i, /agency\s*name/i, /entity\s*name/i, /name\s*of\s*(business|employer|firm|company|agency|entity)/i, /employing\s*firm/i], value: "businessName" },
   { patterns: [/\bdba\b/i, /doing\s*business\s*as/i, /trade\s*name/i, /d\s*b\s*a/i], value: "dba" },
   { patterns: [/nature\s*of\s*business/i, /type\s*of\s*business/i, /business\s*type/i], value: "natureOfBusiness" },
-  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i], value: "businessStreet" },
-  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /city.*_2/i, /city.*2$/i], value: "businessCity" },
-  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /state.*_2/i, /state.*2$/i], value: "businessState" },
-  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i], value: "businessZip" },
-  { patterns: [/business\s*county/i, /employer\s*county/i], value: "businessCounty" },
+  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i, /workplace\s*address/i, /work\s*address/i, /place\s*of\s*business/i], value: "businessStreet" },
+  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /workplace\s*city/i, /city.*_2/i, /city.*2$/i], value: "businessCity" },
+  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /workplace\s*state/i, /state.*_2/i, /state.*2$/i], value: "businessState" },
+  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /workplace\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i], value: "businessZip" },
+  { patterns: [/business\s*county/i, /employer\s*county/i, /workplace\s*county/i], value: "businessCounty" },
   { patterns: [/work\s*phone/i, /business\s*phone/i, /office\s*phone/i, /employer\s*phone/i, /bus.*phone/i], value: "workPhone" },
   { patterns: [/\bfax\b/i, /fax\s*number/i, /facsimile/i, /fax\s*#/i], value: "fax" },
   { patterns: [/work\s*e-?mail/i, /business\s*e-?mail/i, /office\s*e-?mail/i, /employer\s*e-?mail/i], value: "workEmail" },
   { patterns: [/business\s*web/i, /company\s*web/i, /website/i, /web\s*address/i, /url/i], value: "businessWebSocial" },
   { patterns: [/registration\s*no/i, /license\s*no/i, /reg\s*#/i, /license\s*#/i, /registration\s*number/i, /license\s*number/i, /cert.*number/i, /certificate\s*no/i], value: "registrationNo" },
 
-  // Registrations
-  { patterns: [/states?\s*registered/i, /other\s*states?/i, /jurisdictions?/i, /states?\s*licensed/i, /registered\s*in/i], value: "currentRegistrations" },
+  // Registrations — broad patterns for Section 5 type fields
+  { patterns: [/states?\s*registered/i, /other\s*states?/i, /jurisdictions?/i, /states?\s*licensed/i,
+    /registered\s*in/i, /states?\s*of\s*registration/i, /list.*states?/i,
+    /currently\s*registered/i, /currently\s*licensed/i, /other.*jurisdict/i,
+    /states?\s*where/i, /additional\s*states?/i, /states?\s*applied/i,
+    /states?\s*hold/i, /registered.*states?/i, /licensed.*states?/i], value: "currentRegistrations" },
 
-  // Catch-all: generic "city" / "state" → home (matched last so business-specific ones win)
+  // Generic catch-alls (matched last)
+  { patterns: [/street\s*address/i, /address\s*line\s*1/i, /address\s*1/i, /^address$/i, /^street$/i, /address\s*line/i], value: "homeStreet" },
+  { patterns: [/phone\s*number/i, /telephone\s*number/i, /telephone/i, /\bphone\b/i, /\btel\b/i, /contact\s*number/i], value: "homePhone" },
+  { patterns: [/postal\s*code/i, /zip\s*code/i, /\bzip\b/i], value: "homeZip" },
   { patterns: [/^city$/i], value: "homeCity" },
   { patterns: [/^state$/i], value: "homeState" },
 ];
 
 // Fields to auto-skip (sensitive / manual entry)
-const SKIP_PATTERNS = [/\bssn\b/i, /social\s*security/i, /\bsignature\b/i, /^sign$/i, /date\s*signed/i, /\bnotary\b/i, /\bsworn\b/i, /\bwitness\b/i, /\bseal\b/i, /payment/i, /\bfee\b/i, /\bcheck\b.*no/i, /money\s*order/i, /\bamount/i];
+const SKIP_PATTERNS = [/\bssn\b/i, /social\s*security/i, /\bsignature\b/i, /^sign$/i, /date\s*signed/i, /\bnotary\b/i, /\bsworn\b/i, /\bwitness\b/i, /\bseal\b/i, /payment/i, /\bcheck\b.*no/i, /money\s*order/i, /\bamount/i];
 
 function autoMapField(fieldName) {
   const name = normFieldName(fieldName);
-  
+
   // Skip sensitive / manual fields first
   for (const pat of SKIP_PATTERNS) {
     if (pat.test(name)) return "_SKIP";
   }
-  
-  // SPECIAL: Detect table rows that should be addendum
-  // Section 2 (Officers/Shareholders): "Full Name", "Complete Street Address" with "Row" pattern
-  // Section 3 (Employment History): "Name of Business", "Type of Business" with "Row" pattern
-  if (/row\s*\d+/i.test(name)) {
-    // If field contains "Row1", "Row2", etc., check if it's in a table we should map to addendum
-    if (/full\s*name/i.test(name) || /complete.*address/i.test(name) || /street.*address/i.test(name)) {
-      return "_ADDENDUM"; // Officers/Shareholders table
+
+  // SPECIAL: Detect table row fields that should always be addendum
+  // Fields like "Row1_FullName", "employer.0.name", "reference[2]" etc.
+  if (/row\s*\d+/i.test(name) || /\.\d+\./i.test(fieldName) || /\[\d+\]/i.test(fieldName)) {
+    if (/full\s*name/i.test(name) || /complete.*address/i.test(name) || /street.*address/i.test(name) ||
+        /title/i.test(name) || /percent/i.test(name) || /interest/i.test(name) ||
+        /officer/i.test(name) || /shareholder/i.test(name) || /director/i.test(name)) {
+      return "_ADD_financialParties";
     }
-    if (/name.*business.*employer/i.test(name) || /type.*business/i.test(name)) {
-      return "_ADDENDUM"; // Employment History table
+    if (/name.*business/i.test(name) || /business.*employer/i.test(name) || /type.*business/i.test(name) ||
+        /employer/i.test(name) || /occupation/i.test(name) ||
+        /start\s*date/i.test(name) || /end\s*date/i.test(name) || /dates?\s*of/i.test(name)) {
+      return "_ADD_workHistory";
+    }
+    if (/training/i.test(name) || /education/i.test(name) || /school/i.test(name) ||
+        /degree/i.test(name) || /institution/i.test(name) || /program/i.test(name)) {
+      return "_ADD_formalTraining";
+    }
+    if (/athlete/i.test(name) || /client/i.test(name) || /player/i.test(name) || /sport/i.test(name)) {
+      return "_ADD_clientList";
+    }
+    if (/reference/i.test(name)) {
+      return "_ADD_references";
     }
   }
-  
+
+  // Check typed addendum patterns (override standard field mappings)
+  for (const rule of ADDENDUM_FIELD_PATTERNS) {
+    for (const pat of rule.patterns) {
+      if (pat.test(name)) return "_ADD_" + rule.addType;
+    }
+  }
+
   // Run standard mapping rules
   for (const rule of AUTO_MAP_RULES) {
     for (const pat of rule.patterns) {
@@ -183,17 +249,27 @@ function autoMapField(fieldName) {
 function autoMapAllFields(detectedFields) {
   const mappings = {};
   const usedValues = new Set();
+  const detectedAddendumTypes = new Set();
+
   for (const df of detectedFields) {
     const mapped = autoMapField(df.name);
-    if (mapped !== "_SKIP" && !usedValues.has(mapped)) {
-      mappings[df.name] = mapped;
-      // Computed fields + addendum can map to multiple PDF fields; regular fields only once
-      if (!mapped.startsWith("_")) usedValues.add(mapped);
+    if (mapped !== "_SKIP") {
+      // Track which addendum types were detected
+      if (mapped.startsWith("_ADD_")) {
+        detectedAddendumTypes.add(mapped.replace("_ADD_", ""));
+      }
+      // Computed fields, addendums can map to multiple PDF fields; regular fields only once
+      if (!mapped.startsWith("_") && usedValues.has(mapped)) {
+        mappings[df.name] = "_SKIP";
+      } else {
+        mappings[df.name] = mapped;
+        if (!mapped.startsWith("_")) usedValues.add(mapped);
+      }
     } else {
-      mappings[df.name] = mapped === "_SKIP" ? "_SKIP" : mapped;
+      mappings[df.name] = "_SKIP";
     }
   }
-  return mappings;
+  return { mappings, detectedAddendumTypes: Array.from(detectedAddendumTypes) };
 }
 
 /* ═══════════════════ HELPERS ═══════════════════ */
@@ -210,9 +286,16 @@ function getComputed(agent, key) {
   }
 }
 
-function getAgentValue(agent, mappingKey) {
+function getAgentValue(agent, mappingKey, addendumNumberMap) {
   if (!mappingKey || mappingKey === "_SKIP") return null;
   if (mappingKey === "_ADDENDUM") return "See Attached Addendum";
+  if (mappingKey.startsWith("_ADD_")) {
+    const addType = mappingKey.replace("_ADD_", "");
+    const num = addendumNumberMap?.[addType];
+    const label = ADDENDUM_TYPES.find(t => t.key === addType)?.label || addType;
+    if (num) return `See Attached Addendum ${num} - ${label}`;
+    return `See Attached Addendum - ${label}`;
+  }
   if (mappingKey.startsWith("_")) return getComputed(agent, mappingKey);
   return agent[mappingKey] || "";
 }
@@ -253,6 +336,21 @@ function AgentForm({ agent, onSave, onCancel }) {
   const u = (k, v) => setF(p => ({ ...p, [k]: v }));
   const fileRef = useRef(null);
   const [uploadingType, setUploadingType] = useState(null);
+
+  // Merge in-memory bytes from original agent prop (JSON.stringify preserves arrays)
+  useEffect(() => {
+    if (agent && agent.addendums) {
+      setF(prev => {
+        const mergedAdd = { ...prev.addendums };
+        for (const [k, v] of Object.entries(agent.addendums)) {
+          if (v && v.bytes && v.bytes.length > 0 && (!mergedAdd[k] || !mergedAdd[k].bytes || mergedAdd[k].bytes.length === 0)) {
+            mergedAdd[k] = v;
+          }
+        }
+        return { ...prev, addendums: mergedAdd };
+      });
+    }
+  }, []);
 
   const handleAddendumUpload = (e) => {
     const file = e.target.files?.[0];
@@ -321,22 +419,23 @@ function AgentForm({ agent, onSave, onCancel }) {
       {/* Addendums */}
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
         <p className="text-xs font-semibold text-gray-800 mb-1 uppercase tracking-wide">Addendum PDFs</p>
-        <p className="text-xs text-gray-500 mb-3">Upload PDF addendums for this agent. They'll be merged into the final output automatically.</p>
+        <p className="text-xs text-gray-500 mb-3">Upload PDF addendums for this agent. They will be merged into the final output automatically.</p>
         <input type="file" ref={fileRef} accept=".pdf" className="hidden" onChange={handleAddendumUpload} />
         <div className="space-y-2">
           {ADDENDUM_TYPES.map(t => {
             const has = f.addendums[t.key];
+            const hasBytes = has && has.bytes && has.bytes.length > 0;
             return (
-              <div key={t.key} className={`flex items-center justify-between p-2 rounded border ${has ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-200"}`}>
+              <div key={t.key} className={`flex items-center justify-between p-2 rounded border ${hasBytes ? "bg-green-50 border-green-200" : has ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-200"}`}>
                 <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${has ? "bg-green-500" : "bg-gray-300"}`} />
+                  <span className={`w-2 h-2 rounded-full ${hasBytes ? "bg-green-500" : has ? "bg-amber-500" : "bg-gray-300"}`} />
                   <span className="text-sm text-gray-700">{t.label}</span>
-                  {has && <Badge color="green">{has.name}</Badge>}
+                  {has && <Badge color={hasBytes ? "green" : "amber"}>{has.name}{!hasBytes ? " (re-upload needed)" : ""}</Badge>}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => { setUploadingType(t.key); setTimeout(() => fileRef.current?.click(), 0); }}
                     className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50">
-                    {has ? "Replace" : "Upload PDF"}
+                    {has ? (hasBytes ? "Replace" : "Re-upload") : "Upload PDF"}
                   </button>
                   {has && <button onClick={() => removeAddendum(t.key)} className="text-xs px-2 py-1 border border-red-200 text-red-600 rounded hover:bg-red-50">Remove</button>}
                 </div>
@@ -357,10 +456,10 @@ function AgentForm({ agent, onSave, onCancel }) {
 /* ═══════════════════ FORM MAPPING ═══════════════════ */
 function FieldMapper({ form, onUpdate, onAutoMap }) {
   const allOptions = [
-    { label: "— Skip —", value: "_SKIP" },
-    { label: "→ \"See Attached Addendum\"", value: "_ADDENDUM" },
-    ...COMPUTED_FIELDS.map(f => ({ label: `★ ${f.label}`, value: f.key })),
-    ...AGENT_FIELDS.map(f => ({ label: `${f.group} › ${f.label}`, value: f.key })),
+    { label: "-- Skip --", value: "_SKIP" },
+    ...SPECIAL_MAPPINGS.filter(s => s.key !== "_SKIP").map(s => ({ label: s.label, value: s.key })),
+    ...COMPUTED_FIELDS.map(f => ({ label: `* ${f.label}`, value: f.key })),
+    ...AGENT_FIELDS.map(f => ({ label: `${f.group} > ${f.label}`, value: f.key })),
   ];
 
   const mappedCount = Object.values(form.mappings).filter(v => v && v !== "_SKIP").length;
@@ -378,7 +477,6 @@ function FieldMapper({ form, onUpdate, onAutoMap }) {
         </button>
       </div>
       <div className="space-y-1.5">
-        {/* Show mapped fields first, then skipped */}
         {[...form.detectedFields]
           .sort((a, b) => {
             const aSkipped = !form.mappings[a.name] || form.mappings[a.name] === "_SKIP";
@@ -389,14 +487,15 @@ function FieldMapper({ form, onUpdate, onAutoMap }) {
           .map((df, i) => {
             const currentVal = form.mappings[df.name] || "_SKIP";
             const isMapped = currentVal !== "_SKIP";
+            const isAddendum = currentVal.startsWith("_ADD");
             return (
-              <div key={i} className={`flex items-center gap-3 p-2 border rounded text-sm ${isMapped ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-200"}`}>
+              <div key={i} className={`flex items-center gap-3 p-2 border rounded text-sm ${isAddendum ? "bg-purple-50 border-purple-200" : isMapped ? "bg-green-50 border-green-200" : "bg-gray-50 border-gray-200"}`}>
                 <div className="w-1/3 min-w-0">
                   <span className="font-mono text-xs text-gray-600 truncate block" title={df.name}>{df.name}</span>
                   <Badge color={df.type === "PDFTextField" ? "blue" : df.type === "PDFCheckBox" ? "amber" : "gray"}>{df.type.replace("PDF", "").replace("Field", "")}</Badge>
                 </div>
-                <span className={isMapped ? "text-green-500" : "text-gray-300"}>→</span>
-                <select className={`flex-1 px-2 py-1.5 border rounded text-sm ${isMapped ? "border-green-300 bg-white" : "border-gray-300"}`}
+                <span className={isAddendum ? "text-purple-500" : isMapped ? "text-green-500" : "text-gray-300"}>{">"}</span>
+                <select className={`flex-1 px-2 py-1.5 border rounded text-sm ${isAddendum ? "border-purple-300 bg-white" : isMapped ? "border-green-300 bg-white" : "border-gray-300"}`}
                   value={currentVal}
                   onChange={e => onUpdate(df.name, e.target.value)}>
                   {allOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -433,13 +532,19 @@ function StateFormsView({ forms, setForms, pdfLib }) {
           type: f instanceof PDFTextField ? "PDFTextField" : f instanceof PDFCheckBox ? "PDFCheckBox" : f instanceof PDFDropdown ? "PDFDropdown" : "Other",
         }));
       } catch (_) {}
-      // Auto-map fields on upload
-      const autoMappings = detectedFields.length > 0 ? autoMapAllFields(detectedFields) : {};
+      // Auto-map fields and detect which addendum types are needed
+      let autoMappings = {};
+      let autoAddendumSlots = [];
+      if (detectedFields.length > 0) {
+        const result = autoMapAllFields(detectedFields);
+        autoMappings = result.mappings;
+        autoAddendumSlots = result.detectedAddendumTypes;
+      }
       const newForm = {
         id: Date.now(), stateName: newState || "Unnamed", formLabel: newLabel || file.name,
         fileName: file.name, bytes, pageCount: doc.getPageCount(),
         detectedFields, mappings: autoMappings, isFieldable: detectedFields.length > 0,
-        addendumSlots: [],
+        addendumSlots: autoAddendumSlots,
       };
       setForms(prev => [...prev, newForm]);
       setNewState(""); setNewLabel("");
@@ -452,13 +557,23 @@ function StateFormsView({ forms, setForms, pdfLib }) {
   };
 
   const updateMapping = (formId, fieldName, value) => {
-    setForms(prev => prev.map(f => f.id === formId ? { ...f, mappings: { ...f.mappings, [fieldName]: value } } : f));
+    setForms(prev => prev.map(f => {
+      if (f.id !== formId) return f;
+      const newMappings = { ...f.mappings, [fieldName]: value };
+      // Auto-add addendum slot when a typed addendum mapping is selected
+      let newSlots = [...(f.addendumSlots || [])];
+      if (value.startsWith("_ADD_")) {
+        const addType = value.replace("_ADD_", "");
+        if (!newSlots.includes(addType)) newSlots.push(addType);
+      }
+      return { ...f, mappings: newMappings, addendumSlots: newSlots };
+    }));
   };
 
   const toggleAddendumSlot = (formId, slot) => {
     setForms(prev => prev.map(f => {
       if (f.id !== formId) return f;
-      const slots = f.addendumSlots.includes(slot) ? f.addendumSlots.filter(s => s !== slot) : [...f.addendumSlots, slot];
+      const slots = (f.addendumSlots || []).includes(slot) ? f.addendumSlots.filter(s => s !== slot) : [...(f.addendumSlots || []), slot];
       return { ...f, addendumSlots: slots };
     }));
   };
@@ -471,7 +586,6 @@ function StateFormsView({ forms, setForms, pdfLib }) {
         <h2 className="text-xl font-bold text-gray-900">State Forms</h2>
       </div>
 
-      {/* Upload new form */}
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
         <p className="text-xs font-semibold text-gray-800 mb-3 uppercase tracking-wide">Upload a State Form</p>
         <div className="grid grid-cols-3 gap-3 mb-3">
@@ -493,7 +607,6 @@ function StateFormsView({ forms, setForms, pdfLib }) {
         {!pdfLib && <p className="text-xs text-amber-600">Loading PDF library...</p>}
       </div>
 
-      {/* Form list */}
       {forms.length === 0 ? (
         <EmptyState icon="📄" title="No forms uploaded" sub="Upload a state form PDF to get started. The app will detect fillable fields automatically." />
       ) : (
@@ -508,7 +621,7 @@ function StateFormsView({ forms, setForms, pdfLib }) {
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-gray-900">{form.stateName}</span>
-                      <span className="text-sm text-gray-500">— {form.formLabel}</span>
+                      <span className="text-sm text-gray-500">- {form.formLabel}</span>
                     </div>
                     <div className="flex gap-2 mt-1">
                       {needsReupload && <Badge color="red">Re-upload needed</Badge>}
@@ -519,12 +632,12 @@ function StateFormsView({ forms, setForms, pdfLib }) {
                         <Badge color="amber">No fillable fields detected</Badge>
                       )}
                       {mappedCount > 0 && <Badge color="blue">{mappedCount} mapped</Badge>}
-                      {form.addendumSlots.length > 0 && <Badge color="purple">{form.addendumSlots.length} addendums</Badge>}
+                      {(form.addendumSlots || []).length > 0 && <Badge color="purple">{form.addendumSlots.length} addendums</Badge>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={(e) => { e.stopPropagation(); removeForm(form.id); }} className="text-xs px-2 py-1 border border-red-200 text-red-600 rounded hover:bg-red-50">Delete</button>
-                    <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
+                    <span className="text-gray-400 text-sm">{expanded ? "^" : "v"}</span>
                   </div>
                 </div>
 
@@ -536,23 +649,23 @@ function StateFormsView({ forms, setForms, pdfLib }) {
                         <p className="text-xs text-gray-500 mb-3">Fields are auto-mapped on upload. Fix any that look wrong, or re-run auto-map.</p>
                         <FieldMapper form={form} onUpdate={(fn, val) => updateMapping(form.id, fn, val)}
                           onAutoMap={() => {
-                            const newMappings = autoMapAllFields(form.detectedFields);
-                            setForms(prev => prev.map(f => f.id === form.id ? { ...f, mappings: newMappings } : f));
+                            const result = autoMapAllFields(form.detectedFields);
+                            setForms(prev => prev.map(f => f.id === form.id ? { ...f, mappings: result.mappings, addendumSlots: [...new Set([...(f.addendumSlots || []), ...result.detectedAddendumTypes])] } : f));
                           }} />
                       </>
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
-                        This PDF doesn't have fillable form fields. It will still be included in the output — your team fills it manually. Addendums will be appended after this form.
+                        This PDF does not have fillable form fields. It will still be included in the output. Addendums will be appended after this form.
                       </div>
                     )}
 
                     <div className="mt-4 pt-4 border-t border-gray-100">
                       <p className="text-xs font-semibold text-gray-700 mb-2 uppercase">Addendums to Include</p>
-                      <p className="text-xs text-gray-500 mb-2">Check which addendums should be appended after this form when generating.</p>
+                      <p className="text-xs text-gray-500 mb-2">Check which addendums to append. Auto-detected from field mapping are pre-checked.</p>
                       <div className="grid grid-cols-2 gap-1">
                         {ADDENDUM_TYPES.map(t => (
                           <label key={t.key} className="flex items-center gap-2 py-1 text-sm text-gray-700 cursor-pointer">
-                            <input type="checkbox" checked={form.addendumSlots.includes(t.key)} onChange={() => toggleAddendumSlot(form.id, t.key)} />
+                            <input type="checkbox" checked={(form.addendumSlots || []).includes(t.key)} onChange={() => toggleAddendumSlot(form.id, t.key)} />
                             {t.label}
                           </label>
                         ))}
@@ -591,6 +704,13 @@ function GenerateView({ agents, forms, pdfLib }) {
       const formBytes = new Uint8Array(selForm.bytes);
       const doc = await PDFDocument.load(formBytes, { ignoreEncryption: true });
 
+      // Build addendum numbering map
+      const addendumNumberMap = {};
+      let addNum = 1;
+      for (const slot of (selForm.addendumSlots || [])) {
+        addendumNumberMap[slot] = addNum++;
+      }
+
       // Fill fields if form is fieldable
       if (selForm.isFieldable) {
         setStatus("Filling fields...");
@@ -598,7 +718,7 @@ function GenerateView({ agents, forms, pdfLib }) {
           const form = doc.getForm();
           for (const [fieldName, mappingKey] of Object.entries(selForm.mappings)) {
             if (!mappingKey || mappingKey === "_SKIP") continue;
-            const value = getAgentValue(selAgent, mappingKey);
+            const value = getAgentValue(selAgent, mappingKey, addendumNumberMap);
             if (value === null || value === undefined || value === "") continue;
             try {
               const field = form.getField(fieldName);
@@ -609,37 +729,46 @@ function GenerateView({ agents, forms, pdfLib }) {
               } else if (field instanceof PDFDropdown) {
                 try { field.select(String(value)); } catch (_) {}
               }
-            } catch (_) { /* individual field error — skip it */ }
+            } catch (_) {}
           }
           try { form.flatten(); } catch (_) {}
         } catch (formErr) {
           console.warn("Form fill warning:", formErr);
-          // Continue — we'll still output the base PDF even if filling fails
         }
       }
 
-      // ALWAYS create merged doc and include the base form (even if non-fillable)
+      // Create merged document
       const mergedDoc = await PDFDocument.create();
       setStatus("Assembling document...");
-      
+
       // Copy base form pages
       const basePages = await mergedDoc.copyPages(doc, doc.getPageIndices());
       basePages.forEach(p => mergedDoc.addPage(p));
 
-      // Merge addendums
+      // Merge addendums in order
       let addendumCount = 0;
+      let skippedAddendums = [];
       for (const slot of (selForm.addendumSlots || [])) {
         const addendum = selAgent.addendums?.[slot];
-        if (!addendum || !addendum.bytes || addendum.bytes.length === 0) continue;
+        if (!addendum) {
+          skippedAddendums.push(ADDENDUM_TYPES.find(t => t.key === slot)?.label || slot);
+          continue;
+        }
+        if (!addendum.bytes || addendum.bytes.length === 0) {
+          skippedAddendums.push((ADDENDUM_TYPES.find(t => t.key === slot)?.label || slot) + " (needs re-upload)");
+          continue;
+        }
         try {
-          setStatus(`Appending ${ADDENDUM_TYPES.find(t => t.key === slot)?.label || slot}...`);
+          const label = ADDENDUM_TYPES.find(t => t.key === slot)?.label || slot;
+          setStatus(`Appending Addendum ${addendumNumberMap[slot]} - ${label}...`);
           const addBytes = new Uint8Array(addendum.bytes);
           const addDoc = await PDFDocument.load(addBytes, { ignoreEncryption: true });
           const addPages = await mergedDoc.copyPages(addDoc, addDoc.getPageIndices());
           addPages.forEach(p => mergedDoc.addPage(p));
           addendumCount++;
-        } catch (e) { 
-          console.warn("Addendum merge skipped:", slot, e.message); 
+        } catch (e) {
+          console.warn("Addendum merge skipped:", slot, e.message);
+          skippedAddendums.push(ADDENDUM_TYPES.find(t => t.key === slot)?.label || slot);
         }
       }
 
@@ -648,7 +777,7 @@ function GenerateView({ agents, forms, pdfLib }) {
       const agentName = [selAgent.firstName, selAgent.lastName].filter(Boolean).join("_") || "agent";
       const filename = `${selForm.stateName}_${agentName}_${new Date().toISOString().slice(0, 10)}.pdf`;
       downloadBlob(finalBytes, filename);
-      setLastResult({ pages: mergedDoc.getPageCount(), addendums: addendumCount, filename });
+      setLastResult({ pages: mergedDoc.getPageCount(), addendums: addendumCount, filename, skippedAddendums });
       setStatus("");
     } catch (err) {
       console.error("Generate error:", err);
@@ -657,19 +786,31 @@ function GenerateView({ agents, forms, pdfLib }) {
     setGenerating(false);
   };
 
-  // Preview what will be filled
+  // Build addendum numbering for preview
+  const addendumNumberMap = {};
+  let previewAddNum = 1;
+  for (const slot of (selForm?.addendumSlots || [])) {
+    addendumNumberMap[slot] = previewAddNum++;
+  }
+
   const previewFields = selForm && selAgent && selForm.isFieldable ? Object.entries(selForm.mappings)
     .filter(([, v]) => v && v !== "_SKIP")
-    .map(([fieldName, mappingKey]) => ({ fieldName, mappingKey, value: getAgentValue(selAgent, mappingKey) })) : [];
+    .map(([fieldName, mappingKey]) => ({ fieldName, mappingKey, value: getAgentValue(selAgent, mappingKey, addendumNumberMap) })) : [];
 
-  const missingAddendums = selForm && selAgent ? (selForm.addendumSlots || []).filter(s => !selAgent.addendums[s]) : [];
-  const includedAddendums = selForm && selAgent ? (selForm.addendumSlots || []).filter(s => selAgent.addendums[s]) : [];
+  const missingAddendums = selForm && selAgent ? (selForm.addendumSlots || []).filter(s => !selAgent.addendums?.[s]) : [];
+  const noByteAddendums = selForm && selAgent ? (selForm.addendumSlots || []).filter(s => {
+    const add = selAgent.addendums?.[s];
+    return add && (!add.bytes || add.bytes.length === 0);
+  }) : [];
+  const includedAddendums = selForm && selAgent ? (selForm.addendumSlots || []).filter(s => {
+    const add = selAgent.addendums?.[s];
+    return add && add.bytes && add.bytes.length > 0;
+  }) : [];
 
   return (
     <div className="max-w-3xl mx-auto">
       <h2 className="text-xl font-bold text-gray-900 mb-6">Generate Filled Form</h2>
 
-      {/* Step 1: Select form */}
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
         <p className="text-xs font-semibold text-gray-800 mb-3 uppercase tracking-wide">1. Select State Form</p>
         {forms.length === 0 ? (
@@ -680,11 +821,11 @@ function GenerateView({ agents, forms, pdfLib }) {
               <button key={f.id} onClick={() => setSelFormId(f.id)}
                 className={`text-left p-3 rounded border transition-colors ${selFormId === f.id ? "bg-blue-50 border-blue-300" : "bg-gray-50 border-gray-200 hover:bg-gray-100"}`}>
                 <span className="font-semibold text-sm">{f.stateName}</span>
-                <span className="text-sm text-gray-500 ml-2">— {f.formLabel}</span>
+                <span className="text-sm text-gray-500 ml-2">- {f.formLabel}</span>
                 <div className="flex gap-2 mt-1">
                   {f.isFieldable && <Badge color="green">{Object.values(f.mappings).filter(v => v && v !== "_SKIP").length} fields mapped</Badge>}
                   {!f.isFieldable && <Badge color="amber">Manual fill required</Badge>}
-                  {f.addendumSlots.length > 0 && <Badge color="purple">{f.addendumSlots.length} addendums</Badge>}
+                  {(f.addendumSlots || []).length > 0 && <Badge color="purple">{f.addendumSlots.length} addendums</Badge>}
                 </div>
               </button>
             ))}
@@ -692,7 +833,6 @@ function GenerateView({ agents, forms, pdfLib }) {
         )}
       </div>
 
-      {/* Step 2: Select agent */}
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
         <p className="text-xs font-semibold text-gray-800 mb-3 uppercase tracking-wide">2. Select Agent</p>
         {agents.length === 0 ? (
@@ -701,12 +841,17 @@ function GenerateView({ agents, forms, pdfLib }) {
           <div className="grid gap-2">
             {agents.map(a => {
               const addCount = Object.keys(a.addendums || {}).length;
+              const bytesCount = Object.values(a.addendums || {}).filter(v => v && v.bytes && v.bytes.length > 0).length;
               return (
                 <button key={a.id} onClick={() => setSelAgentId(a.id)}
                   className={`text-left p-3 rounded border transition-colors ${selAgentId === a.id ? "bg-blue-50 border-blue-300" : "bg-gray-50 border-gray-200 hover:bg-gray-100"}`}>
                   <span className="font-semibold text-sm">{a.firstName} {a.lastName}</span>
-                  {a.businessName && <span className="text-sm text-gray-500 ml-2">— {a.businessName}</span>}
-                  {addCount > 0 && <Badge color="green">{addCount} addendum{addCount > 1 ? "s" : ""}</Badge>}
+                  {a.businessName && <span className="text-sm text-gray-500 ml-2">- {a.businessName}</span>}
+                  <div className="flex gap-2 mt-1">
+                    {bytesCount > 0 && <Badge color="green">{bytesCount} addendum{bytesCount > 1 ? "s" : ""} ready</Badge>}
+                    {addCount > bytesCount && <Badge color="amber">{addCount - bytesCount} need re-upload</Badge>}
+                    {addCount === 0 && <Badge color="gray">No addendums</Badge>}
+                  </div>
                 </button>
               );
             })}
@@ -714,14 +859,13 @@ function GenerateView({ agents, forms, pdfLib }) {
         )}
       </div>
 
-      {/* Step 3: Preview + Generate */}
       {selForm && selAgent && (
         <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
           <p className="text-xs font-semibold text-gray-800 mb-3 uppercase tracking-wide">3. Preview & Generate</p>
 
           {!selForm.isFieldable && (
             <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
-              ⚠️ This form has no fillable fields — it will be included as blank pages for your team to fill manually.
+              This form has no fillable fields. It will be included as blank pages for your team to fill manually.
             </div>
           )}
 
@@ -730,9 +874,9 @@ function GenerateView({ agents, forms, pdfLib }) {
               <p className="text-xs text-gray-500 mb-2">Fields that will be filled:</p>
               <div className="max-h-48 overflow-y-auto space-y-1">
                 {previewFields.map((pf, i) => (
-                  <div key={i} className="flex items-center justify-between py-1 px-2 bg-green-50 rounded text-xs">
+                  <div key={i} className={`flex items-center justify-between py-1 px-2 rounded text-xs ${pf.mappingKey.startsWith("_ADD") ? "bg-purple-50" : "bg-green-50"}`}>
                     <span className="font-mono text-gray-600">{pf.fieldName}</span>
-                    <span className="text-green-800 font-medium truncate ml-2 max-w-xs">{pf.value}</span>
+                    <span className={`font-medium truncate ml-2 max-w-xs ${pf.mappingKey.startsWith("_ADD") ? "text-purple-800" : "text-green-800"}`}>{pf.value}</span>
                   </div>
                 ))}
               </div>
@@ -744,7 +888,18 @@ function GenerateView({ agents, forms, pdfLib }) {
               <p className="text-xs text-green-700 font-medium mb-1">Addendums that will be attached:</p>
               {includedAddendums.map(s => (
                 <div key={s} className="flex items-center gap-2 text-xs text-green-700 py-0.5">
-                  <span>✓</span> {ADDENDUM_TYPES.find(t => t.key === s)?.label} — {selAgent.addendums[s]?.name}
+                  <span>OK</span> Addendum {addendumNumberMap[s]} - {ADDENDUM_TYPES.find(t => t.key === s)?.label} ({selAgent.addendums[s]?.name})
+                </div>
+              ))}
+            </div>
+          )}
+
+          {noByteAddendums.length > 0 && (
+            <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded">
+              <p className="text-xs text-red-800 font-medium mb-1">Addendums need re-upload (PDF data lost after page reload):</p>
+              {noByteAddendums.map(s => (
+                <div key={s} className="text-xs text-red-700 py-0.5">
+                  Addendum {addendumNumberMap[s]} - {ADDENDUM_TYPES.find(t => t.key === s)?.label} -- go to Agents tab and re-upload
                 </div>
               ))}
             </div>
@@ -754,13 +909,13 @@ function GenerateView({ agents, forms, pdfLib }) {
             <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded">
               <p className="text-xs text-amber-800 font-medium mb-1">Missing addendums (form expects these):</p>
               {missingAddendums.map(s => (
-                <div key={s} className="text-xs text-amber-700 py-0.5">⚠ {ADDENDUM_TYPES.find(t => t.key === s)?.label}</div>
+                <div key={s} className="text-xs text-amber-700 py-0.5">Addendum {addendumNumberMap[s]} - {ADDENDUM_TYPES.find(t => t.key === s)?.label}</div>
               ))}
             </div>
           )}
 
           <div className="bg-amber-50 border border-amber-200 rounded p-2 mb-4 text-xs text-amber-800">
-            Reminder: SSN, signatures, and payment info are <strong>not</strong> filled — your team handles those manually.
+            Reminder: SSN, signatures, and payment info are <strong>not</strong> filled. Your team handles those manually.
           </div>
 
           <button onClick={handleGenerate} disabled={generating || !pdfLib} className={`${btnGreen} w-full text-center`}>
@@ -769,7 +924,13 @@ function GenerateView({ agents, forms, pdfLib }) {
 
           {lastResult && (
             <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-sm text-green-800">
-              ✓ Downloaded <strong>{lastResult.filename}</strong> — {lastResult.pages} pages{lastResult.addendums > 0 ? ` (including ${lastResult.addendums} addendum${lastResult.addendums > 1 ? "s" : ""})` : ""}
+              Downloaded <strong>{lastResult.filename}</strong> - {lastResult.pages} pages
+              {lastResult.addendums > 0 ? ` (including ${lastResult.addendums} addendum${lastResult.addendums > 1 ? "s" : ""})` : ""}
+              {lastResult.skippedAddendums && lastResult.skippedAddendums.length > 0 && (
+                <div className="mt-1 text-xs text-amber-700">
+                  Skipped: {lastResult.skippedAddendums.join(", ")}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -792,7 +953,6 @@ export default function AgentRegistrationTool() {
 
   useEffect(() => { setPdfLib({ PDFDocument }); }, []);
 
-  // Load saved data from localStorage on first client render
   useEffect(() => {
     try {
       const raw = localStorage.getItem("agent_reg_data");
@@ -802,11 +962,9 @@ export default function AgentRegistrationTool() {
         if (d && d.forms) setForms(d.forms);
       }
     } catch (e) { console.error("Load failed:", e); }
-    // Use setTimeout to ensure state has settled before enabling saves
     setTimeout(() => { didLoad.current = true; }, 100);
   }, []);
 
-  // Auto-save whenever agents or forms change (only after initial load)
   useEffect(() => {
     if (!didLoad.current) return;
     try {
@@ -862,8 +1020,8 @@ export default function AgentRegistrationTool() {
               <h1 className="text-base font-bold text-gray-900 leading-tight">Agent Registration Tool</h1>
               <p className="text-xs text-gray-400">
                 {pdfLoading ? "Loading..." : "Ready"}
-                {agents.length > 0 && ` · ${agents.length} agent${agents.length > 1 ? "s" : ""}`}
-                {forms.length > 0 && ` · ${forms.length} form${forms.length > 1 ? "s" : ""}`}
+                {agents.length > 0 && ` | ${agents.length} agent${agents.length > 1 ? "s" : ""}`}
+                {forms.length > 0 && ` | ${forms.length} form${forms.length > 1 ? "s" : ""}`}
               </p>
             </div>
           </div>
@@ -882,7 +1040,6 @@ export default function AgentRegistrationTool() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8">
-        {/* AGENTS TAB */}
         {tab === "agents" && !showForm && (
           <div>
             <div className="flex items-center justify-between mb-6">
@@ -896,6 +1053,7 @@ export default function AgentRegistrationTool() {
               <div className="grid gap-3">
                 {agents.map(a => {
                   const addCount = Object.keys(a.addendums || {}).length;
+                  const bytesCount = Object.values(a.addendums || {}).filter(v => v && v.bytes && v.bytes.length > 0).length;
                   return (
                     <div key={a.id} className="bg-white rounded-lg border border-gray-200 p-4 hover:border-gray-300 transition-colors">
                       <div className="flex items-center justify-between">
@@ -907,12 +1065,14 @@ export default function AgentRegistrationTool() {
                             {a.homeCity && a.homeState && <span>{a.homeCity}, {a.homeState}</span>}
                           </div>
                           <div className="flex gap-2 mt-1.5">
-                            {addCount > 0 && <Badge color="green">{addCount} addendum{addCount > 1 ? "s" : ""}</Badge>}
+                            {bytesCount > 0 && <Badge color="green">{bytesCount} addendum{bytesCount > 1 ? "s" : ""} ready</Badge>}
+                            {addCount > bytesCount && bytesCount > 0 && <Badge color="amber">{addCount - bytesCount} need re-upload</Badge>}
+                            {addCount > 0 && bytesCount === 0 && <Badge color="amber">{addCount} addendum{addCount > 1 ? "s" : ""} (re-upload needed)</Badge>}
                             {addCount === 0 && <Badge color="gray">No addendums</Badge>}
                           </div>
                         </div>
                         <div className="flex gap-2 shrink-0">
-                          <button onClick={() => { setTab("generate"); }} className={`px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700`}>Fill Form</button>
+                          <button onClick={() => { setTab("generate"); }} className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700">Fill Form</button>
                           <button onClick={() => { setEditAgent(a); setShowForm(true); }} className={btnSecondary}>Edit</button>
                           <button onClick={() => setAgents(p => p.filter(x => x.id !== a.id))} className="px-3 py-1.5 text-sm border border-red-200 text-red-600 rounded-md hover:bg-red-50">Delete</button>
                         </div>
@@ -929,12 +1089,10 @@ export default function AgentRegistrationTool() {
           <AgentForm agent={editAgent} onSave={saveAgent} onCancel={() => setShowForm(false)} />
         )}
 
-        {/* STATE FORMS TAB */}
         {tab === "forms" && (
           <StateFormsView forms={forms} setForms={setForms} pdfLib={pdfLib} />
         )}
 
-        {/* GENERATE TAB */}
         {tab === "generate" && (
           <GenerateView agents={agents} forms={forms} pdfLib={pdfLib} />
         )}
