@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown } from "pdf-lib";
 
 /* ═══════════════════ CONSTANTS ═══════════════════ */
 const AGENT_FIELDS = [
@@ -402,7 +402,10 @@ function StateFormsView({ forms, setForms, pdfLib }) {
       let detectedFields = [];
       try {
         const form = doc.getForm();
-        detectedFields = form.getFields().map(f => ({ name: f.getName(), type: f.constructor.name }));
+        detectedFields = form.getFields().map(f => ({
+          name: f.getName(),
+          type: f instanceof PDFTextField ? "PDFTextField" : f instanceof PDFCheckBox ? "PDFCheckBox" : f instanceof PDFDropdown ? "PDFDropdown" : "Other",
+        }));
       } catch (_) {}
       // Auto-map fields on upload
       const autoMappings = detectedFields.length > 0 ? autoMapAllFields(detectedFields) : {};
@@ -572,11 +575,11 @@ function GenerateView({ agents, forms, pdfLib }) {
             if (value === null || value === undefined || value === "") continue;
             try {
               const field = form.getField(fieldName);
-              if (field.constructor.name === "PDFTextField") {
+              if (field instanceof PDFTextField) {
                 field.setText(String(value));
-              } else if (field.constructor.name === "PDFCheckBox") {
+              } else if (field instanceof PDFCheckBox) {
                 if (["yes", "true", "1", "on", "x"].includes(String(value).toLowerCase())) field.check();
-              } else if (field.constructor.name === "PDFDropdown") {
+              } else if (field instanceof PDFDropdown) {
                 try { field.select(String(value)); } catch (_) {}
               }
             } catch (_) { /* individual field error — skip it */ }
