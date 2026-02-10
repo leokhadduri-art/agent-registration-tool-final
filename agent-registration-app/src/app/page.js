@@ -129,9 +129,9 @@ const AUTO_MAP_RULES = [
   { patterns: [/\bdba\b/i, /doing\s*business\s*as/i, /trade\s*name/i, /d\s*b\s*a/i], value: "dba" },
   { patterns: [/nature\s*of\s*business/i, /type\s*of\s*business/i, /business\s*type/i], value: "natureOfBusiness" },
   { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i], value: "businessStreet" },
-  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i], value: "businessCity" },
-  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i], value: "businessState" },
-  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i], value: "businessZip" },
+  { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /city.*_2/i, /city.*2$/i], value: "businessCity" },
+  { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /state.*_2/i, /state.*2$/i], value: "businessState" },
+  { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i], value: "businessZip" },
   { patterns: [/business\s*county/i, /employer\s*county/i], value: "businessCounty" },
   { patterns: [/work\s*phone/i, /business\s*phone/i, /office\s*phone/i, /employer\s*phone/i, /bus.*phone/i], value: "workPhone" },
   { patterns: [/\bfax\b/i, /fax\s*number/i, /facsimile/i, /fax\s*#/i], value: "fax" },
@@ -152,10 +152,26 @@ const SKIP_PATTERNS = [/\bssn\b/i, /social\s*security/i, /\bsignature\b/i, /^sig
 
 function autoMapField(fieldName) {
   const name = normFieldName(fieldName);
-  // Skip sensitive / manual fields
+  
+  // Skip sensitive / manual fields first
   for (const pat of SKIP_PATTERNS) {
     if (pat.test(name)) return "_SKIP";
   }
+  
+  // SPECIAL: Detect table rows that should be addendum
+  // Section 2 (Officers/Shareholders): "Full Name", "Complete Street Address" with "Row" pattern
+  // Section 3 (Employment History): "Name of Business", "Type of Business" with "Row" pattern
+  if (/row\s*\d+/i.test(name)) {
+    // If field contains "Row1", "Row2", etc., check if it's in a table we should map to addendum
+    if (/full\s*name/i.test(name) || /complete.*address/i.test(name) || /street.*address/i.test(name)) {
+      return "_ADDENDUM"; // Officers/Shareholders table
+    }
+    if (/name.*business.*employer/i.test(name) || /type.*business/i.test(name)) {
+      return "_ADDENDUM"; // Employment History table
+    }
+  }
+  
+  // Run standard mapping rules
   for (const rule of AUTO_MAP_RULES) {
     for (const pat of rule.patterns) {
       if (pat.test(name)) return rule.value;
