@@ -89,6 +89,74 @@ const EMPTY_AGENT = {
   addendums: {},
 };
 
+/* ═══════════════════ INDEXEDDB ADDENDUM STORAGE ═══════════════════ */
+const IDB_NAME = "agent_reg_addendums";
+const IDB_STORE = "bytes";
+const IDB_VERSION = 1;
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") return reject(new Error("No indexedDB"));
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Save one addendum's bytes: key = "agentId:addType" */
+async function idbSaveAddendum(agentId, addType, bytes) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(bytes, `${agentId}:${addType}`);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch (e) { console.warn("IDB save failed:", e); }
+}
+
+/** Load all addendum bytes for an agent → { addType: bytes } */
+async function idbLoadAgent(agentId) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const store = tx.objectStore(IDB_STORE);
+    return new Promise((resolve) => {
+      const result = {};
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return resolve(result);
+        const key = cursor.key;
+        if (typeof key === "string" && key.startsWith(`${agentId}:`)) {
+          const addType = key.split(":").slice(1).join(":");
+          result[addType] = cursor.value;
+        }
+        cursor.continue();
+      };
+      req.onerror = () => resolve(result);
+    });
+  } catch (e) { console.warn("IDB load failed:", e); return {}; }
+}
+
+/** Delete all addendum bytes for an agent */
+async function idbDeleteAgent(agentId) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      if (typeof cursor.key === "string" && cursor.key.startsWith(`${agentId}:`)) {
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch (e) { console.warn("IDB delete failed:", e); }
+}
+
 /* ═══════════════════ AUTO-MAP ENGINE ═══════════════════ */
 function normFieldName(raw) {
   return raw
@@ -102,16 +170,19 @@ function normFieldName(raw) {
 /* --- Typed addendum field patterns: route fields to specific addendum types --- */
 const ADDENDUM_FIELD_PATTERNS = [
   // Officers / Shareholders / Directors / Financially Interested Parties
-  { patterns: [/officer/i, /shareholder/i, /director(?!.*mail)/i, /principal/i,
+  // NOTE: removed /principal/i — too broad, matches "Principal Business Address"
+  { patterns: [/officer/i, /shareholder/i, /director(?!.*mail)/i,
     /equity.*holder/i, /financially.*interest/i, /interest.*percent/i,
     /profit.*shar/i, /corporation.*officer/i, /not\s*a\s*corporation/i,
-    /member.*manager/i, /associate.*sharer/i], addType: "financialParties" },
+    /member.*manager/i, /associate.*sharer/i, /principal.*officer/i,
+    /principal.*partner/i, /principal.*owner/i], addType: "financialParties" },
 
   // Employment / Work History
+  // NOTE: removed /name\s*of\s*business.*employer/i — that's Q4 current employer, not history
   { patterns: [/employ(ment|er).*hist/i, /work.*hist/i, /occupation.*hist/i,
     /previous.*employ/i, /past.*employ/i, /job.*hist/i,
-    /name\s*of\s*business.*employer/i, /business.*engaged/i,
-    /self.?employ/i], addType: "workHistory" },
+    /business.*engaged/i, /self.?employ/i,
+    /employment.*record/i, /work.*record/i], addType: "workHistory" },
 
   // Formal Training / Practical Experience / Education
   { patterns: [/formal\s*train/i, /practical\s*experience/i, /education.*background/i,
@@ -120,9 +191,14 @@ const ADDENDUM_FIELD_PATTERNS = [
     /institution.*name/i, /field.*study/i, /year.*graduat/i], addType: "formalTraining" },
 
   // Client List / Athletes Represented
+  // NOTE: /list.*athlete/i changed to require "represent" to avoid false matches
+  //       Added /acted.*a(s|gent)/i for TN Q19 "acted as athlete agent"
   { patterns: [/client\s*list/i, /athlete.*represent/i, /player.*represent/i,
-    /current.*client/i, /student.*athlete/i, /list.*athlete/i,
-    /name.*athlete/i], addType: "clientList" },
+    /current.*client/i, /student.*athlete.*(?:name|list|represent|contact|acted)/i,
+    /list.*athlete.*represent/i, /name.*athlete.*represent/i,
+    /acted.*a(s\s*)?a(thlete\s*)?(gent|agent)/i,
+    /athlete.*agent.*(?:last|five|past|\d+\s*year)/i,
+    /student.*athlete.*(?:last|five|past|\d+\s*year)/i], addType: "clientList" },
 
   // References
   { patterns: [/reference.*name/i, /reference.*address/i, /reference.*phone/i,
@@ -159,21 +235,21 @@ const AUTO_MAP_RULES = [
   { patterns: [/home\s*zip/i, /residential\s*zip/i, /mailing\s*zip/i], value: "homeZip" },
   { patterns: [/home\s*county/i, /county\s*of\s*residence/i, /residential\s*county/i], value: "homeCounty" },
 
-  // Contact
-  { patterns: [/home\s*phone/i, /personal\s*phone/i, /daytime\s*phone/i, /primary\s*phone/i], value: "homePhone" },
-  { patterns: [/mobile/i, /cell\s*phone/i, /\bcell\b/i, /cellular/i], value: "mobilePhone" },
-  { patterns: [/e-?mail\s*address/i, /personal\s*e-?mail/i, /home\s*e-?mail/i, /^e-?mail$/i, /contact\s*e-?mail/i, /applicant\s*e-?mail/i], value: "homeEmail" },
+  // Contact — phone patterns include "telephone" variations for TN-style forms
+  { patterns: [/home\s*(phone|tele)/i, /personal\s*(phone|tele)/i, /daytime\s*(phone|tele)/i, /primary\s*(phone|tele)/i, /residential\s*(phone|tele)/i], value: "homePhone" },
+  { patterns: [/mobile\s*(phone|tele)?/i, /cell\s*(phone|tele)/i, /\bcell\b/i, /cellular/i, /mobile\s*tele/i], value: "mobilePhone" },
+  { patterns: [/e-?mail\s*address/i, /personal\s*e-?mail/i, /home\s*e-?mail/i, /^e-?mail$/i, /contact\s*e-?mail/i, /applicant\s*e-?mail/i, /e-?mail\s*of/i], value: "homeEmail" },
 
   // Business — workplace / office / employer all map to business fields (NOT home)
   { patterns: [/business\s*name/i, /employer\s*name/i, /firm\s*name/i, /company\s*name/i, /agency\s*name/i, /entity\s*name/i, /name\s*of\s*(business|employer|firm|company|agency|entity)/i, /employing\s*firm/i], value: "businessName" },
   { patterns: [/\bdba\b/i, /doing\s*business\s*as/i, /trade\s*name/i, /d\s*b\s*a/i], value: "dba" },
   { patterns: [/nature\s*of\s*business/i, /type\s*of\s*business/i, /business\s*type/i], value: "natureOfBusiness" },
-  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i, /workplace\s*address/i, /work\s*address/i, /place\s*of\s*business/i], value: "businessStreet" },
+  { patterns: [/business\s*address/i, /business\s*street/i, /employer\s*address/i, /office\s*address/i, /firm\s*address/i, /company\s*address/i, /workplace\s*address/i, /work\s*address/i, /place\s*of\s*business/i, /principal\s*business\s*address/i, /principal\s*address/i], value: "businessStreet" },
   { patterns: [/business\s*city/i, /employer\s*city/i, /office\s*city/i, /workplace\s*city/i, /city.*_2/i, /city.*2$/i], value: "businessCity" },
   { patterns: [/business\s*state/i, /employer\s*state/i, /office\s*state/i, /workplace\s*state/i, /state.*_2/i, /state.*2$/i], value: "businessState" },
   { patterns: [/business\s*zip/i, /employer\s*zip/i, /office\s*zip/i, /workplace\s*zip/i, /zip.*_2/i, /zip.*2$/i, /zip.*code.*_2/i, /zip.*code.*2$/i], value: "businessZip" },
   { patterns: [/business\s*county/i, /employer\s*county/i, /workplace\s*county/i], value: "businessCounty" },
-  { patterns: [/work\s*phone/i, /business\s*phone/i, /office\s*phone/i, /employer\s*phone/i, /bus.*phone/i], value: "workPhone" },
+  { patterns: [/work\s*(phone|tele)/i, /business\s*(phone|tele)/i, /office\s*(phone|tele)/i, /employer\s*(phone|tele)/i, /bus.*(phone|tele)/i, /work.*number/i], value: "workPhone" },
   { patterns: [/\bfax\b/i, /fax\s*number/i, /facsimile/i, /fax\s*#/i], value: "fax" },
   { patterns: [/work\s*e-?mail/i, /business\s*e-?mail/i, /office\s*e-?mail/i, /employer\s*e-?mail/i], value: "workEmail" },
   { patterns: [/business\s*web/i, /company\s*web/i, /website/i, /web\s*address/i, /url/i], value: "businessWebSocial" },
@@ -188,7 +264,8 @@ const AUTO_MAP_RULES = [
 
   // Generic catch-alls (matched last)
   { patterns: [/street\s*address/i, /address\s*line\s*1/i, /address\s*1/i, /^address$/i, /^street$/i, /address\s*line/i], value: "homeStreet" },
-  { patterns: [/phone\s*number/i, /telephone\s*number/i, /telephone/i, /\bphone\b/i, /\btel\b/i, /contact\s*number/i], value: "homePhone" },
+  { patterns: [/phone\s*number/i, /telephone\s*number/i, /telephone/i, /\bphone\b/i, /\btel\b/i, /contact\s*number/i, /tele.*number/i], value: "homePhone" },
+  { patterns: [/e.?mail/i], value: "homeEmail" },
   { patterns: [/postal\s*code/i, /zip\s*code/i, /\bzip\b/i], value: "homeZip" },
   { patterns: [/^city$/i], value: "homeCity" },
   { patterns: [/^state$/i], value: "homeState" },
@@ -337,7 +414,7 @@ function AgentForm({ agent, onSave, onCancel }) {
   const fileRef = useRef(null);
   const [uploadingType, setUploadingType] = useState(null);
 
-  // Merge in-memory bytes from original agent prop (JSON.stringify preserves arrays)
+  // Merge in-memory bytes from original agent prop, then hydrate from IndexedDB
   useEffect(() => {
     if (agent && agent.addendums) {
       setF(prev => {
@@ -348,6 +425,21 @@ function AgentForm({ agent, onSave, onCancel }) {
           }
         }
         return { ...prev, addendums: mergedAdd };
+      });
+    }
+    // Hydrate addendum bytes from IndexedDB for this agent
+    if (agent && agent.id) {
+      idbLoadAgent(agent.id).then(idbData => {
+        if (Object.keys(idbData).length === 0) return;
+        setF(prev => {
+          const hydratedAdd = { ...prev.addendums };
+          for (const [addType, bytes] of Object.entries(idbData)) {
+            if (hydratedAdd[addType] && (!hydratedAdd[addType].bytes || hydratedAdd[addType].bytes.length === 0)) {
+              hydratedAdd[addType] = { ...hydratedAdd[addType], bytes: Array.from(bytes) };
+            }
+          }
+          return { ...prev, addendums: hydratedAdd };
+        });
       });
     }
   }, []);
@@ -958,11 +1050,30 @@ export default function AgentRegistrationTool() {
       const raw = localStorage.getItem("agent_reg_data");
       if (raw) {
         const d = JSON.parse(raw);
-        if (d && d.agents) setAgents(d.agents);
+        if (d && d.agents) {
+          // Hydrate addendum bytes from IndexedDB for all agents
+          const loadedAgents = d.agents;
+          setAgents(loadedAgents);
+          // Async hydrate bytes
+          Promise.all(loadedAgents.map(async (agent) => {
+            if (!agent.id) return agent;
+            const idbData = await idbLoadAgent(agent.id);
+            if (Object.keys(idbData).length === 0) return agent;
+            const hydratedAdd = { ...(agent.addendums || {}) };
+            for (const [addType, bytes] of Object.entries(idbData)) {
+              if (hydratedAdd[addType]) {
+                hydratedAdd[addType] = { ...hydratedAdd[addType], bytes: Array.from(bytes) };
+              }
+            }
+            return { ...agent, addendums: hydratedAdd };
+          })).then(hydrated => {
+            setAgents(hydrated);
+          });
+        }
         if (d && d.forms) setForms(d.forms);
       }
     } catch (e) { console.error("Load failed:", e); }
-    setTimeout(() => { didLoad.current = true; }, 100);
+    setTimeout(() => { didLoad.current = true; }, 200);
   }, []);
 
   useEffect(() => {
@@ -983,7 +1094,15 @@ export default function AgentRegistrationTool() {
     } catch (e) { console.error("Save failed:", e); }
   }, [agents, forms]);
 
-  const saveAgent = (a) => {
+  const saveAgent = async (a) => {
+    // Persist addendum bytes to IndexedDB so they survive page reload
+    if (a.addendums) {
+      for (const [addType, addData] of Object.entries(a.addendums)) {
+        if (addData && addData.bytes && addData.bytes.length > 0) {
+          await idbSaveAddendum(a.id, addType, new Uint8Array(addData.bytes));
+        }
+      }
+    }
     setAgents(prev => prev.find(x => x.id === a.id) ? prev.map(x => x.id === a.id ? a : x) : [...prev, a]);
     setEditAgent(null); setShowForm(false);
   };
@@ -1074,7 +1193,7 @@ export default function AgentRegistrationTool() {
                         <div className="flex gap-2 shrink-0">
                           <button onClick={() => { setTab("generate"); }} className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700">Fill Form</button>
                           <button onClick={() => { setEditAgent(a); setShowForm(true); }} className={btnSecondary}>Edit</button>
-                          <button onClick={() => setAgents(p => p.filter(x => x.id !== a.id))} className="px-3 py-1.5 text-sm border border-red-200 text-red-600 rounded-md hover:bg-red-50">Delete</button>
+                          <button onClick={() => { idbDeleteAgent(a.id); setAgents(p => p.filter(x => x.id !== a.id)); }} className="px-3 py-1.5 text-sm border border-red-200 text-red-600 rounded-md hover:bg-red-50">Delete</button>
                         </div>
                       </div>
                     </div>
