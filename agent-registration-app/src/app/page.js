@@ -90,6 +90,16 @@ function normFieldName(raw) {
 }
 
 const AUTO_MAP_RULES = [
+  // ADDENDUM-ONLY FIELDS — Must come first to override more generic rules
+  // Officers/Shareholders/Directors/Partners table fields
+  { patterns: [/officer/i, /shareholder/i, /director/i, /partner/i, /principal/i, /owner/i, /member.*llc/i, /equity.*holder/i, /financially.*interested/i], value: "_ADDENDUM" },
+  // Employment history table fields
+  { patterns: [/employment.*history/i, /employer.*history/i, /work.*history/i, /occupation.*history/i, /previous.*employer/i, /past.*employment/i, /job.*history/i], value: "_ADDENDUM" },
+  // Client list / athletes represented
+  { patterns: [/client.*list/i, /athlete.*represented/i, /player.*represented/i, /current.*client/i], value: "_ADDENDUM" },
+  // References
+  { patterns: [/reference.*name/i, /reference.*address/i, /reference.*phone/i, /professional.*reference/i], value: "_ADDENDUM" },
+  
   // Personal — specific before generic
   { patterns: [/first\s*name/i, /fname/i, /given\s*name/i, /^first$/i, /applicant\s*first/i, /name.*first/i], value: "firstName" },
   { patterns: [/middle\s*name/i, /mname/i, /^middle$/i, /\bmi\b/i, /m\.?i\.?$/i, /middle\s*initial/i, /name.*middle/i], value: "middleName" },
@@ -565,6 +575,7 @@ function GenerateView({ agents, forms, pdfLib }) {
       const formBytes = new Uint8Array(selForm.bytes);
       const doc = await PDFDocument.load(formBytes, { ignoreEncryption: true });
 
+      // Fill fields if form is fieldable
       if (selForm.isFieldable) {
         setStatus("Filling fields...");
         try {
@@ -591,12 +602,15 @@ function GenerateView({ agents, forms, pdfLib }) {
         }
       }
 
-      // Merge addendums
+      // ALWAYS create merged doc and include the base form (even if non-fillable)
       const mergedDoc = await PDFDocument.create();
       setStatus("Assembling document...");
-      const filledPages = await mergedDoc.copyPages(doc, doc.getPageIndices());
-      filledPages.forEach(p => mergedDoc.addPage(p));
+      
+      // Copy base form pages
+      const basePages = await mergedDoc.copyPages(doc, doc.getPageIndices());
+      basePages.forEach(p => mergedDoc.addPage(p));
 
+      // Merge addendums
       let addendumCount = 0;
       for (const slot of (selForm.addendumSlots || [])) {
         const addendum = selAgent.addendums?.[slot];
@@ -608,7 +622,9 @@ function GenerateView({ agents, forms, pdfLib }) {
           const addPages = await mergedDoc.copyPages(addDoc, addDoc.getPageIndices());
           addPages.forEach(p => mergedDoc.addPage(p));
           addendumCount++;
-        } catch (e) { console.warn("Addendum merge skipped:", e.message); }
+        } catch (e) { 
+          console.warn("Addendum merge skipped:", slot, e.message); 
+        }
       }
 
       setStatus("Saving PDF...");
@@ -626,7 +642,7 @@ function GenerateView({ agents, forms, pdfLib }) {
   };
 
   // Preview what will be filled
-  const previewFields = selForm && selAgent ? Object.entries(selForm.mappings)
+  const previewFields = selForm && selAgent && selForm.isFieldable ? Object.entries(selForm.mappings)
     .filter(([, v]) => v && v !== "_SKIP")
     .map(([fieldName, mappingKey]) => ({ fieldName, mappingKey, value: getAgentValue(selAgent, mappingKey) })) : [];
 
@@ -651,6 +667,7 @@ function GenerateView({ agents, forms, pdfLib }) {
                 <span className="text-sm text-gray-500 ml-2">— {f.formLabel}</span>
                 <div className="flex gap-2 mt-1">
                   {f.isFieldable && <Badge color="green">{Object.values(f.mappings).filter(v => v && v !== "_SKIP").length} fields mapped</Badge>}
+                  {!f.isFieldable && <Badge color="amber">Manual fill required</Badge>}
                   {f.addendumSlots.length > 0 && <Badge color="purple">{f.addendumSlots.length} addendums</Badge>}
                 </div>
               </button>
@@ -667,7 +684,7 @@ function GenerateView({ agents, forms, pdfLib }) {
         ) : (
           <div className="grid gap-2">
             {agents.map(a => {
-              const addCount = Object.keys(a.addendums).length;
+              const addCount = Object.keys(a.addendums || {}).length;
               return (
                 <button key={a.id} onClick={() => setSelAgentId(a.id)}
                   className={`text-left p-3 rounded border transition-colors ${selAgentId === a.id ? "bg-blue-50 border-blue-300" : "bg-gray-50 border-gray-200 hover:bg-gray-100"}`}>
@@ -685,6 +702,12 @@ function GenerateView({ agents, forms, pdfLib }) {
       {selForm && selAgent && (
         <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
           <p className="text-xs font-semibold text-gray-800 mb-3 uppercase tracking-wide">3. Preview & Generate</p>
+
+          {!selForm.isFieldable && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
+              ⚠️ This form has no fillable fields — it will be included as blank pages for your team to fill manually.
+            </div>
+          )}
 
           {previewFields.length > 0 && (
             <div className="mb-4">
@@ -748,30 +771,43 @@ export default function AgentRegistrationTool() {
   const [tab, setTab] = useState("agents");
   const [editAgent, setEditAgent] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
   const importRef = useRef(null);
+  const didLoad = useRef(false);
 
   useEffect(() => { setPdfLib({ PDFDocument }); }, []);
 
   // Load saved data from localStorage on first client render
   useEffect(() => {
     try {
-      const d = JSON.parse(localStorage.getItem("agent_reg_data"));
-      if (d?.agents?.length) setAgents(d.agents);
-      if (d?.forms?.length) setForms(d.forms);
-    } catch {}
-    setHydrated(true);
+      const raw = localStorage.getItem("agent_reg_data");
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d && d.agents) setAgents(d.agents);
+        if (d && d.forms) setForms(d.forms);
+      }
+    } catch (e) { console.error("Load failed:", e); }
+    // Use setTimeout to ensure state has settled before enabling saves
+    setTimeout(() => { didLoad.current = true; }, 100);
   }, []);
 
   // Auto-save whenever agents or forms change (only after initial load)
   useEffect(() => {
-    if (!hydrated) return;
+    if (!didLoad.current) return;
     try {
-      const lightAgents = agents.map(a => ({ ...a, addendums: Object.fromEntries(Object.entries(a.addendums || {}).map(([k, v]) => [k, { name: v.name }])) }));
+      const lightAgents = agents.map(a => {
+        const lightAdd = {};
+        if (a.addendums) {
+          for (const [k, v] of Object.entries(a.addendums)) {
+            lightAdd[k] = { name: v ? v.name : "" };
+          }
+        }
+        return { ...a, addendums: lightAdd };
+      });
       const lightForms = forms.map(f => ({ ...f, bytes: [] }));
-      localStorage.setItem("agent_reg_data", JSON.stringify({ agents: lightAgents, forms: lightForms }));
-    } catch {}
-  }, [agents, forms, hydrated]);
+      const payload = JSON.stringify({ agents: lightAgents, forms: lightForms });
+      localStorage.setItem("agent_reg_data", payload);
+    } catch (e) { console.error("Save failed:", e); }
+  }, [agents, forms]);
 
   const saveAgent = (a) => {
     setAgents(prev => prev.find(x => x.id === a.id) ? prev.map(x => x.id === a.id ? a : x) : [...prev, a]);
@@ -843,7 +879,7 @@ export default function AgentRegistrationTool() {
             ) : (
               <div className="grid gap-3">
                 {agents.map(a => {
-                  const addCount = Object.keys(a.addendums).length;
+                  const addCount = Object.keys(a.addendums || {}).length;
                   return (
                     <div key={a.id} className="bg-white rounded-lg border border-gray-200 p-4 hover:border-gray-300 transition-colors">
                       <div className="flex items-center justify-between">
