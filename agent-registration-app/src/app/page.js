@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, rgb } from "pdf-lib";
+import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, rgb, StandardFonts } from "pdf-lib";
 
 /* ═══════════════════ CONSTANTS ═══════════════════ */
 const AGENT_FIELDS = [
@@ -767,6 +767,147 @@ function FieldMapper({ form, onUpdate, onAutoMap }) {
   );
 }
 
+/* ═══════════════════ TEXT PLACEMENT EDITOR ═══════════════════ */
+const PLACEABLE_FIELDS = [
+  ...AGENT_FIELDS.map(f => ({ key: f.key, label: f.label })),
+  ...COMPUTED_FIELDS.map(f => ({ key: f.key, label: f.label })),
+  ...SPECIAL_MAPPINGS.filter(f => f.key !== "_SKIP").map(f => ({ key: f.key, label: f.label })),
+  { key: "_CUSTOM", label: "Custom Text" },
+];
+
+function TextPlacementEditor({ formBytes, placements = [], onUpdate }) {
+  const canvasRef = useRef(null);
+  const [pdfjs, setPdfjs] = useState(null);
+  const [pdfDoc, setPdfDoc] = useState(null);
+  const [pageNum, setPageNum] = useState(0);
+  const [numPages, setNumPages] = useState(0);
+  const [selField, setSelField] = useState("");
+  const [customText, setCustomText] = useState("");
+  const [fontSize, setFontSize] = useState(10);
+  const scaleRef = useRef(1);
+  const pgRef = useRef({ w: 612, h: 792 });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const lib = await import("pdfjs-dist");
+        lib.GlobalWorkerOptions.workerSrc =
+          `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${lib.version}/pdf.worker.min.mjs`;
+        setPdfjs(lib);
+      } catch (e) { console.warn("pdf.js load:", e); }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!pdfjs || !formBytes?.length) return;
+    pdfjs.getDocument({ data: new Uint8Array(formBytes) }).promise
+      .then(d => { setPdfDoc(d); setNumPages(d.numPages); })
+      .catch(e => console.warn("PDF open:", e));
+  }, [pdfjs, formBytes]);
+
+  useEffect(() => {
+    if (!pdfDoc || !canvasRef.current) return;
+    let cancelled = false;
+    pdfDoc.getPage(pageNum + 1).then(page => {
+      if (cancelled) return;
+      const vp = page.getViewport({ scale: 1 });
+      const s = Math.min(580 / vp.width, 1.5);
+      scaleRef.current = s;
+      pgRef.current = { w: vp.width, h: vp.height };
+      const svp = page.getViewport({ scale: s });
+      const c = canvasRef.current;
+      c.width = svp.width; c.height = svp.height;
+      const ctx = c.getContext("2d");
+      page.render({ canvasContext: ctx, viewport: svp }).promise.then(() => {
+        if (cancelled) return;
+        const marks = placements.filter(p => p.page === pageNum);
+        for (const m of marks) {
+          const cx = m.x * s, cy = (pgRef.current.h - m.y) * s;
+          ctx.font = "10px sans-serif";
+          const tw = Math.max(ctx.measureText(m.label).width + 10, 50);
+          ctx.fillStyle = "rgba(37,99,235,0.15)";
+          ctx.fillRect(cx, cy - 13, tw, 16);
+          ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1;
+          ctx.strokeRect(cx, cy - 13, tw, 16);
+          ctx.fillStyle = "#1e40af";
+          ctx.fillText(m.label, cx + 3, cy - 1);
+        }
+      });
+    });
+    return () => { cancelled = true; };
+  }, [pdfDoc, pageNum, placements]);
+
+  const handleClick = (e) => {
+    if (!selField) return;
+    if (selField === "_CUSTOM" && !customText.trim()) return;
+    const c = canvasRef.current, r = c.getBoundingClientRect();
+    const cx = (e.clientX - r.left) * (c.width / r.width);
+    const cy = (e.clientY - r.top) * (c.height / r.height);
+    const s = scaleRef.current;
+    const pdfX = Math.round(cx / s * 10) / 10;
+    const pdfY = Math.round((pgRef.current.h - cy / s) * 10) / 10;
+    const fDef = PLACEABLE_FIELDS.find(f => f.key === selField);
+    const label = selField === "_CUSTOM" ? customText.trim() : (fDef?.label || selField);
+    onUpdate([...placements, {
+      page: pageNum, x: pdfX, y: pdfY, fieldKey: selField,
+      customText: selField === "_CUSTOM" ? customText.trim() : "",
+      fontSize, label,
+    }]);
+  };
+
+  if (!pdfjs) return <div className="text-sm text-gray-500 py-4">Loading PDF viewer...</div>;
+  if (!formBytes?.length) return <div className="text-sm text-gray-500 py-4">Upload a form first.</div>;
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-700 mb-2 uppercase">Text Placement</p>
+      <p className="text-xs text-gray-500 mb-3">Select a field, then click on the page where it should appear.</p>
+      <div className="flex flex-wrap gap-2 mb-3 items-end">
+        <div className="flex-1 min-w-[180px]">
+          <label className={lc}>Field</label>
+          <select className={ic} value={selField} onChange={e => setSelField(e.target.value)}>
+            <option value="">-- Select field --</option>
+            {PLACEABLE_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+          </select>
+        </div>
+        {selField === "_CUSTOM" && (
+          <div className="flex-1 min-w-[120px]">
+            <label className={lc}>Text</label>
+            <input className={ic} value={customText} onChange={e => setCustomText(e.target.value)} placeholder="Type text..." />
+          </div>
+        )}
+        <div className="w-20">
+          <label className={lc}>Size</label>
+          <input className={ic} type="number" min={6} max={24} value={fontSize} onChange={e => setFontSize(Number(e.target.value))} />
+        </div>
+      </div>
+      <div className="flex items-center gap-2 mb-2">
+        <button disabled={pageNum <= 0} onClick={() => setPageNum(p => p - 1)} className="px-2 py-1 text-xs border rounded disabled:opacity-30">&lsaquo;</button>
+        <span className="text-xs text-gray-600">Page {pageNum + 1} of {numPages}</span>
+        <button disabled={pageNum >= numPages - 1} onClick={() => setPageNum(p => p + 1)} className="px-2 py-1 text-xs border rounded disabled:opacity-30">&rsaquo;</button>
+      </div>
+      <div className={`border rounded overflow-hidden mb-3 bg-gray-100 ${selField ? "cursor-crosshair" : "cursor-default"} ${!selField ? "border-gray-300" : "border-blue-400"}`}
+        onClick={handleClick}>
+        <canvas ref={canvasRef} className="block mx-auto" style={{ maxWidth: "100%" }} />
+      </div>
+      {placements.length > 0 && (
+        <div className="mb-2">
+          <p className="text-xs font-semibold text-gray-700 mb-1">{placements.length} placed field{placements.length !== 1 ? "s" : ""}:</p>
+          <div className="max-h-40 overflow-y-auto space-y-1">
+            {placements.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-xs bg-blue-50 rounded px-2 py-1">
+                <span className="text-gray-700">{p.label} <span className="text-gray-400">— pg {p.page + 1}, {p.fontSize}pt</span></span>
+                <button onClick={(e) => { e.stopPropagation(); onUpdate(placements.filter((_, j) => j !== i)); }} className="text-red-500 hover:text-red-700 ml-2">×</button>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => onUpdate([])} className="text-xs text-red-500 hover:text-red-700 mt-1">Clear all</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════════════ STATE FORMS TAB ═══════════════════ */
 function StateFormsView({ forms, setForms, pdfLib }) {
   const fileRef = useRef(null);
@@ -914,9 +1055,11 @@ function StateFormsView({ forms, setForms, pdfLib }) {
                           }} />
                       </>
                     ) : (
-                      <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
-                        This PDF does not have fillable form fields. It will still be included in the output. Addendums will be appended after this form.
-                      </div>
+                      <TextPlacementEditor
+                        formBytes={form.bytes}
+                        placements={form.textPlacements || []}
+                        onUpdate={(tp) => setForms(prev => prev.map(f => f.id === form.id ? { ...f, textPlacements: tp } : f))}
+                      />
                     )}
 
                     <div className="mt-4 pt-4 border-t border-gray-100">
@@ -997,6 +1140,29 @@ function GenerateView({ agents, forms, pdfLib }) {
           try { form.updateFieldAppearances(); } catch (_) {}
         } catch (formErr) {
           console.warn("Form fill warning:", formErr);
+        }
+      }
+
+      // Apply text placements (for non-fillable forms or extra annotations)
+      if (selForm.textPlacements && selForm.textPlacements.length > 0) {
+        setStatus("Placing text...");
+        const font = await doc.embedFont(StandardFonts.Helvetica);
+        for (const tp of selForm.textPlacements) {
+          try {
+            let value;
+            if (tp.fieldKey === "_CUSTOM") {
+              value = tp.customText;
+            } else {
+              value = getAgentValue(selAgent, tp.fieldKey, addendumNumberMap);
+            }
+            if (!value) continue;
+            const page = doc.getPage(tp.page);
+            page.drawText(String(value), {
+              x: tp.x, y: tp.y,
+              size: tp.fontSize || 10,
+              font, color: rgb(0, 0, 0),
+            });
+          } catch (e) { console.warn("Text placement:", e); }
         }
       }
 
