@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown } from "pdf-lib";
+import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, rgb } from "pdf-lib";
 
 /* ═══════════════════ CONSTANTS ═══════════════════ */
 const AGENT_FIELDS = [
@@ -1000,15 +1000,8 @@ function GenerateView({ agents, forms, pdfLib }) {
         }
       }
 
-      // Create merged document
-      const mergedDoc = await PDFDocument.create();
+      // Append addendum pages directly to the filled doc (preserves all form fields)
       setStatus("Assembling document...");
-
-      // Copy base form pages
-      const basePages = await mergedDoc.copyPages(doc, doc.getPageIndices());
-      basePages.forEach(p => mergedDoc.addPage(p));
-
-      // Merge addendums in order
       let addendumCount = 0;
       let skippedAddendums = [];
       for (const slot of (selForm.addendumSlots || [])) {
@@ -1026,8 +1019,21 @@ function GenerateView({ agents, forms, pdfLib }) {
           setStatus(`Appending Addendum ${addendumNumberMap[slot]} - ${label}...`);
           const addBytes = new Uint8Array(addendum.bytes);
           const addDoc = await PDFDocument.load(addBytes, { ignoreEncryption: true });
-          const addPages = await mergedDoc.copyPages(addDoc, addDoc.getPageIndices());
-          addPages.forEach(p => mergedDoc.addPage(p));
+          const addPages = await doc.copyPages(addDoc, addDoc.getPageIndices());
+          addPages.forEach(p => doc.addPage(p));
+          // Add editable header field at top of first addendum page
+          try {
+            const form = doc.getForm();
+            const pg = addPages[0];
+            const { width, height } = pg.getSize();
+            const hdr = form.createTextField(`addendum_hdr_${slot}`);
+            hdr.setText(`Addendum ${addendumNumberMap[slot]} — ${label}`);
+            hdr.addToPage(pg, {
+              x: 50, y: height - 50, width: width - 100, height: 28,
+              backgroundColor: rgb(1, 1, 1), borderWidth: 0,
+            });
+            hdr.setFontSize(14);
+          } catch (_) {}
           addendumCount++;
         } catch (e) {
           console.warn("Addendum merge skipped:", slot, e.message);
@@ -1036,11 +1042,11 @@ function GenerateView({ agents, forms, pdfLib }) {
       }
 
       setStatus("Saving PDF...");
-      const finalBytes = await mergedDoc.save();
+      const finalBytes = await doc.save();
       const agentName = [selAgent.firstName, selAgent.lastName].filter(Boolean).join("_") || "agent";
       const filename = `${selForm.stateName}_${agentName}_${new Date().toISOString().slice(0, 10)}.pdf`;
       downloadBlob(finalBytes, filename);
-      setLastResult({ pages: mergedDoc.getPageCount(), addendums: addendumCount, filename, skippedAddendums });
+      setLastResult({ pages: doc.getPageCount(), addendums: addendumCount, filename, skippedAddendums });
       setStatus("");
     } catch (err) {
       console.error("Generate error:", err);
