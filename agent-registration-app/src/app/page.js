@@ -993,7 +993,8 @@ function GenerateView({ agents, forms, pdfLib }) {
               }
             } catch (_) {}
           }
-          try { form.flatten(); } catch (_) {}
+          // Keep fields editable so user can correct errors / tweak addendum headers
+          try { form.updateFieldAppearances(); } catch (_) {}
         } catch (formErr) {
           console.warn("Form fill warning:", formErr);
         }
