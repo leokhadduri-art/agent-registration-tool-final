@@ -89,37 +89,68 @@ const EMPTY_AGENT = {
   addendums: {},
 };
 
-/* ═══════════════════ INDEXEDDB ADDENDUM STORAGE ═══════════════════ */
-const IDB_NAME = "agent_reg_addendums";
-const IDB_STORE = "bytes";
+/* ═══════════════════ INDEXEDDB PDF STORAGE ═══════════════════ */
+/* Stores both state-form PDF bytes and addendum PDF bytes so they    survive page reloads without re-uploading.
+   Key convention:  form:<formId>          → Uint8Array  (state form PDF)
+                    add:<agentId>:<type>   → { name, bytes }  (addendum PDF)  */
+const IDB_NAME = "agent_reg_store";
+const IDB_STORE = "pdfs";
 const IDB_VERSION = 1;
 
 function openIDB() {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") return reject(new Error("No indexedDB"));
     const req = indexedDB.open(IDB_NAME, IDB_VERSION);
-    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-/** Save one addendum's bytes: key = "agentId:addType" */
-async function idbSaveAddendum(agentId, addType, bytes) {
+/* ── State-form PDF bytes ── */
+async function idbSaveFormBytes(formId, bytes) {
   try {
     const db = await openIDB();
     const tx = db.transaction(IDB_STORE, "readwrite");
-    tx.objectStore(IDB_STORE).put(bytes, `${agentId}:${addType}`);
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
-  } catch (e) { console.warn("IDB save failed:", e); }
+    tx.objectStore(IDB_STORE).put(bytes, `form:${formId}`);
+    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+  } catch (e) { console.warn("IDB form save failed:", e); }
+}
+async function idbLoadFormBytes(formId) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const req = tx.objectStore(IDB_STORE).get(`form:${formId}`);
+    return new Promise(r => { req.onsuccess = () => r(req.result || null); req.onerror = () => r(null); });
+  } catch (e) { return null; }
+}
+async function idbDeleteFormBytes(formId) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).delete(`form:${formId}`);
+    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+  } catch (e) { console.warn("IDB form delete failed:", e); }
 }
 
-/** Load all addendum bytes for an agent → { addType: bytes } */
+/* ── Addendum PDF bytes ── */
+async function idbSaveAddendum(agentId, addType, name, bytes) {
+  try {
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put({ name, bytes }, `add:${agentId}:${addType}`);
+    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+  } catch (e) { console.warn("IDB addendum save failed:", e); }
+}
 async function idbLoadAgent(agentId) {
   try {
     const db = await openIDB();
     const tx = db.transaction(IDB_STORE, "readonly");
     const store = tx.objectStore(IDB_STORE);
+    const prefix = `add:${agentId}:`;
     return new Promise((resolve) => {
       const result = {};
       const req = store.openCursor();
@@ -127,9 +158,14 @@ async function idbLoadAgent(agentId) {
         const cursor = req.result;
         if (!cursor) return resolve(result);
         const key = cursor.key;
-        if (typeof key === "string" && key.startsWith(`${agentId}:`)) {
-          const addType = key.split(":").slice(1).join(":");
-          result[addType] = cursor.value;
+        if (typeof key === "string" && key.startsWith(prefix)) {
+          const addType = key.slice(prefix.length);
+          const val = cursor.value;
+          if (val && val.name !== undefined && val.bytes) {
+            result[addType] = val;
+          } else if (val instanceof Uint8Array || ArrayBuffer.isView(val)) {
+            result[addType] = { name: "", bytes: val };
+          }
         }
         cursor.continue();
       };
@@ -137,24 +173,47 @@ async function idbLoadAgent(agentId) {
     });
   } catch (e) { console.warn("IDB load failed:", e); return {}; }
 }
-
-/** Delete all addendum bytes for an agent */
 async function idbDeleteAgent(agentId) {
   try {
     const db = await openIDB();
     const tx = db.transaction(IDB_STORE, "readwrite");
     const store = tx.objectStore(IDB_STORE);
+    const prefix = `add:${agentId}:`;
     const req = store.openCursor();
     req.onsuccess = () => {
       const cursor = req.result;
       if (!cursor) return;
-      if (typeof cursor.key === "string" && cursor.key.startsWith(`${agentId}:`)) {
-        cursor.delete();
-      }
+      if (typeof cursor.key === "string" && cursor.key.startsWith(prefix)) cursor.delete();
       cursor.continue();
     };
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+    await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
   } catch (e) { console.warn("IDB delete failed:", e); }
+}
+
+/* ── Bulk hydration helpers ── */
+async function hydrateFormsFromIDB(forms) {
+  return Promise.all(forms.map(async (form) => {
+    if (!form.id) return form;
+    if (form.bytes && form.bytes.length > 0) return form;
+    const raw = await idbLoadFormBytes(form.id);
+    if (!raw) return form;
+    return { ...form, bytes: Array.from(raw) };
+  }));
+}
+async function hydrateAgentsFromIDB(agents) {
+  return Promise.all(agents.map(async (agent) => {
+    if (!agent.id) return agent;
+    const idbData = await idbLoadAgent(agent.id);
+    if (Object.keys(idbData).length === 0) return agent;
+    const merged = { ...(agent.addendums || {}) };
+    for (const [addType, entry] of Object.entries(idbData)) {
+      merged[addType] = {
+        name: merged[addType]?.name || entry.name || "",
+        bytes: Array.from(entry.bytes),
+      };
+    }
+    return { ...agent, addendums: merged };
+  }));
 }
 
 /* ═══════════════════ AUTO-MAP ENGINE ═══════════════════ */
@@ -185,14 +244,16 @@ const ADDENDUM_FIELD_PATTERNS = [
     /equity.*holder/i, /financially.*interest/i, /interest.*percent/i,
     /profit.*shar/i, /corporation.*officer/i, /not\s*a\s*corporation/i,
     /member.*manager/i, /associate.*sharer/i, /principal.*officer/i,
-    /principal.*partner/i, /principal.*owner/i], addType: "financialParties" },
+    /principal.*partner/i, /principal.*owner/i,
+    /^name\s*of\s*person$/i, /^title$/i], addType: "financialParties" },
 
   // Employment / Work History
   // NOTE: removed /name\s*of\s*business.*employer/i — that's Q4 current employer, not history
   { patterns: [/employ(ment|er).*hist/i, /work.*hist/i, /occupation.*hist/i,
     /previous.*employ/i, /past.*employ/i, /job.*hist/i,
     /business.*engaged/i, /self.?employ/i,
-    /employment.*record/i, /work.*record/i], addType: "workHistory" },
+    /employment.*record/i, /work.*record/i,
+    /business\s*(or|&|and)\s*occupation/i], addType: "workHistory" },
 
   // Formal Training / Practical Experience / Education
   { patterns: [/formal\s*train/i, /practical\s*experience/i, /education.*background/i,
@@ -208,12 +269,13 @@ const ADDENDUM_FIELD_PATTERNS = [
     /list.*athlete.*represent/i, /name.*athlete.*represent/i,
     /acted.*a(s\s*)?a(thlete\s*)?(gent|agent)/i,
     /athlete.*agent.*(?:last|five|past|\d+\s*year)/i,
-    /student.*athlete.*(?:last|five|past|\d+\s*year)/i], addType: "clientList" },
+    /student.*athlete.*(?:last|five|past|\d+\s*year)/i,
+    /\bsport\b(?!.*agent)/i, /\bteam\b/i], addType: "clientList" },
 
   // References
   { patterns: [/reference.*name/i, /reference.*address/i, /reference.*phone/i,
     /professional.*reference/i, /personal.*reference/i, /character.*reference/i,
-    /reference.*\d/i], addType: "references" },
+    /reference.*\d/i, /^\d+\s*name\s*of\s*person/i], addType: "references" },
 
   // License / Registration History
   { patterns: [/license.*hist/i, /registration.*hist/i, /previous.*license/i,
@@ -375,22 +437,76 @@ function autoMapAllFields(detectedFields) {
   const usedValues = new Set();
   const detectedAddendumTypes = new Set();
 
-  for (const df of detectedFields) {
-    const mapped = autoMapField(df.name);
+  // ── PASS 1: Standard per-field mapping (no duplicate tracking yet) ──
+  const fieldList = detectedFields.map(df => ({
+    name: df.name,
+    mapped: autoMapField(df.name),
+  }));
+
+  // ── PASS 2: Neighborhood-aware addendum re-mapping ──
+  // Fields with generic home/personal mappings or unmatched _SKIP near addendum
+  // fields get re-mapped to the dominant addendum type in their neighborhood.
+  // This handles flat-named forms (NY) where "Address", "City", "Phone" etc.
+  // appear in addendum sections but have no section-specific field names.
+  const WINDOW = 5;
+  const REMAPPABLE_GENERIC = new Set([
+    "_fullName", "_fullNameLF", "_homeAddrFull",
+    "homeStreet", "homeCity", "homeState", "homeZip", "homeCounty",
+    "homePhone", "homeEmail", "mobilePhone",
+  ]);
+
+  // Snapshot of original pass-1 mappings (prevents cascade across sections)
+  const origMapped = fieldList.map(item => item.mapped);
+
+  for (let i = 0; i < fieldList.length; i++) {
+    const item = fieldList[i];
+    const isSkip = item.mapped === "_SKIP";
+    const isGeneric = REMAPPABLE_GENERIC.has(item.mapped);
+    if (!isSkip && !isGeneric) continue; // specific mapping — keep it
+
+    // Never remap intentionally-skipped sensitive fields (SSN, signature, etc.)
+    if (isSkip) {
+      const nm = normFieldName(item.name);
+      const lf = leafFieldName(item.name);
+      if (SKIP_PATTERNS.some(pat => pat.test(nm) || pat.test(lf))) continue;
+    }
+
+    // Count addendum types in neighborhood (using ORIGINAL pass-1 mappings)
+    const addCounts = {};
+    for (let j = Math.max(0, i - WINDOW); j <= Math.min(fieldList.length - 1, i + WINDOW); j++) {
+      if (j === i) continue;
+      const m = origMapped[j];
+      if (m.startsWith("_ADD_")) {
+        addCounts[m] = (addCounts[m] || 0) + 1;
+      }
+    }
+    const best = Object.entries(addCounts).sort((a, b) => b[1] - a[1])[0];
+    if (!best) continue;
+
+    // _SKIP fields: threshold 1 (they have no mapping otherwise)
+    // Generic mapped fields: threshold 2 (need stronger evidence to override)
+    const threshold = isSkip ? 1 : 2;
+    if (best[1] >= threshold) {
+      item.mapped = best[0];
+    }
+  }
+
+  // ── PASS 3: Apply mappings with duplicate tracking ──
+  for (const item of fieldList) {
+    const mapped = item.mapped;
     if (mapped !== "_SKIP") {
-      // Track which addendum types were detected
       if (mapped.startsWith("_ADD_")) {
         detectedAddendumTypes.add(mapped.replace("_ADD_", ""));
       }
-      // Computed fields, addendums can map to multiple PDF fields; regular fields only once
+      // Computed fields & addendums can map to multiple PDF fields; regular fields only once
       if (!mapped.startsWith("_") && usedValues.has(mapped)) {
-        mappings[df.name] = "_SKIP";
+        mappings[item.name] = "_SKIP";
       } else {
-        mappings[df.name] = mapped;
+        mappings[item.name] = mapped;
         if (!mapped.startsWith("_")) usedValues.add(mapped);
       }
     } else {
-      mappings[df.name] = "_SKIP";
+      mappings[item.name] = "_SKIP";
     }
   }
   return { mappings, detectedAddendumTypes: Array.from(detectedAddendumTypes) };
@@ -463,31 +579,33 @@ function AgentForm({ agent, onSave, onCancel }) {
   const fileRef = useRef(null);
   const [uploadingType, setUploadingType] = useState(null);
 
-  // Merge in-memory bytes from original agent prop, then hydrate from IndexedDB
+  // Hydrate addendum bytes: first from parent agent prop, then from IndexedDB
   useEffect(() => {
     if (agent && agent.addendums) {
       setF(prev => {
-        const mergedAdd = { ...prev.addendums };
+        const merged = { ...prev.addendums };
         for (const [k, v] of Object.entries(agent.addendums)) {
-          if (v && v.bytes && v.bytes.length > 0 && (!mergedAdd[k] || !mergedAdd[k].bytes || mergedAdd[k].bytes.length === 0)) {
-            mergedAdd[k] = v;
+          if (v && v.bytes && v.bytes.length > 0 && (!merged[k]?.bytes?.length)) {
+            merged[k] = v;
           }
         }
-        return { ...prev, addendums: mergedAdd };
+        return { ...prev, addendums: merged };
       });
     }
-    // Hydrate addendum bytes from IndexedDB for this agent
     if (agent && agent.id) {
       idbLoadAgent(agent.id).then(idbData => {
         if (Object.keys(idbData).length === 0) return;
         setF(prev => {
-          const hydratedAdd = { ...prev.addendums };
-          for (const [addType, bytes] of Object.entries(idbData)) {
-            if (hydratedAdd[addType] && (!hydratedAdd[addType].bytes || hydratedAdd[addType].bytes.length === 0)) {
-              hydratedAdd[addType] = { ...hydratedAdd[addType], bytes: Array.from(bytes) };
+          const merged = { ...prev.addendums };
+          for (const [addType, entry] of Object.entries(idbData)) {
+            if (!merged[addType]?.bytes?.length) {
+              merged[addType] = {
+                name: merged[addType]?.name || entry.name || "",
+                bytes: Array.from(entry.bytes),
+              };
             }
           }
-          return { ...prev, addendums: hydratedAdd };
+          return { ...prev, addendums: merged };
         });
       });
     }
@@ -688,6 +806,7 @@ function StateFormsView({ forms, setForms, pdfLib }) {
         addendumSlots: autoAddendumSlots,
       };
       setForms(prev => [...prev, newForm]);
+      idbSaveFormBytes(newForm.id, new Uint8Array(bytes));
       setNewState(""); setNewLabel("");
       setExpandedId(newForm.id);
     } catch (err) {
@@ -719,7 +838,7 @@ function StateFormsView({ forms, setForms, pdfLib }) {
     }));
   };
 
-  const removeForm = (id) => setForms(prev => prev.filter(f => f.id !== id));
+  const removeForm = (id) => { idbDeleteFormBytes(id); setForms(prev => prev.filter(f => f.id !== id)); };
 
   return (
     <div>
@@ -1096,37 +1215,34 @@ export default function AgentRegistrationTool() {
 
   useEffect(() => { setPdfLib({ PDFDocument }); }, []);
 
+  // ── Load from localStorage, then hydrate PDF bytes from IndexedDB ──
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("agent_reg_data");
-      if (raw) {
-        const d = JSON.parse(raw);
-        if (d && d.agents) {
-          // Hydrate addendum bytes from IndexedDB for all agents
-          const loadedAgents = d.agents;
-          setAgents(loadedAgents);
-          // Async hydrate bytes
-          Promise.all(loadedAgents.map(async (agent) => {
-            if (!agent.id) return agent;
-            const idbData = await idbLoadAgent(agent.id);
-            if (Object.keys(idbData).length === 0) return agent;
-            const hydratedAdd = { ...(agent.addendums || {}) };
-            for (const [addType, bytes] of Object.entries(idbData)) {
-              if (hydratedAdd[addType]) {
-                hydratedAdd[addType] = { ...hydratedAdd[addType], bytes: Array.from(bytes) };
-              }
-            }
-            return { ...agent, addendums: hydratedAdd };
-          })).then(hydrated => {
-            setAgents(hydrated);
-          });
+    (async () => {
+      try {
+        let loadedAgents = [];
+        let loadedForms = [];
+        const raw = localStorage.getItem("agent_reg_data");
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (d && d.agents) loadedAgents = d.agents;
+          if (d && d.forms) loadedForms = d.forms;
         }
-        if (d && d.forms) setForms(d.forms);
-      }
-    } catch (e) { console.error("Load failed:", e); }
-    setTimeout(() => { didLoad.current = true; }, 200);
+        // Set lightweight data immediately so UI renders
+        if (loadedAgents.length) setAgents(loadedAgents);
+        if (loadedForms.length) setForms(loadedForms);
+        // Hydrate PDF bytes from IndexedDB (forms + addendums)
+        const [hForms, hAgents] = await Promise.all([
+          hydrateFormsFromIDB(loadedForms),
+          hydrateAgentsFromIDB(loadedAgents),
+        ]);
+        if (hForms.length) setForms(hForms);
+        if (hAgents.length) setAgents(hAgents);
+      } catch (e) { console.error("Load failed:", e); }
+      setTimeout(() => { didLoad.current = true; }, 300);
+    })();
   }, []);
 
+  // ── Persist metadata to localStorage (bytes live in IDB) ──
   useEffect(() => {
     if (!didLoad.current) return;
     try {
@@ -1140,17 +1256,16 @@ export default function AgentRegistrationTool() {
         return { ...a, addendums: lightAdd };
       });
       const lightForms = forms.map(f => ({ ...f, bytes: [] }));
-      const payload = JSON.stringify({ agents: lightAgents, forms: lightForms });
-      localStorage.setItem("agent_reg_data", payload);
+      localStorage.setItem("agent_reg_data", JSON.stringify({ agents: lightAgents, forms: lightForms }));
     } catch (e) { console.error("Save failed:", e); }
   }, [agents, forms]);
 
   const saveAgent = async (a) => {
-    // Persist addendum bytes to IndexedDB so they survive page reload
+    // Persist addendum bytes to IndexedDB
     if (a.addendums) {
       for (const [addType, addData] of Object.entries(a.addendums)) {
         if (addData && addData.bytes && addData.bytes.length > 0) {
-          await idbSaveAddendum(a.id, addType, new Uint8Array(addData.bytes));
+          await idbSaveAddendum(a.id, addType, addData.name || "", new Uint8Array(addData.bytes));
         }
       }
     }
@@ -1159,7 +1274,14 @@ export default function AgentRegistrationTool() {
   };
 
   const exportData = () => {
-    const data = JSON.stringify({ agents, forms }, null, 2);
+    // Export strips bytes (too large for JSON) — IDB is the byte store
+    const lightAgents = agents.map(a => {
+      const lightAdd = {};
+      if (a.addendums) { for (const [k, v] of Object.entries(a.addendums)) { lightAdd[k] = { name: v ? v.name : "" }; } }
+      return { ...a, addendums: lightAdd };
+    });
+    const lightForms = forms.map(f => ({ ...f, bytes: [] }));
+    const data = JSON.stringify({ agents: lightAgents, forms: lightForms }, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "agent-reg-data.json"; a.click();
@@ -1169,11 +1291,21 @@ export default function AgentRegistrationTool() {
   const importData = (e) => {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
-        if (data.agents) setAgents(data.agents);
-        if (data.forms) setForms(data.forms);
+        // Set data first, then hydrate bytes from IDB
+        let importedAgents = data.agents || [];
+        let importedForms = data.forms || [];
+        if (importedAgents.length) setAgents(importedAgents);
+        if (importedForms.length) setForms(importedForms);
+        // Hydrate any IDB bytes that match these IDs
+        const [hForms, hAgents] = await Promise.all([
+          hydrateFormsFromIDB(importedForms),
+          hydrateAgentsFromIDB(importedAgents),
+        ]);
+        if (hForms.some((f, i) => f !== importedForms[i])) setForms(hForms);
+        if (hAgents.some((a, i) => a !== importedAgents[i])) setAgents(hAgents);
       } catch (_) {}
     };
     reader.readAsText(file);
